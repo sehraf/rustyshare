@@ -4,6 +4,7 @@ pub enum RsError {
     StdIo(std::io::Error),
     Ssl(openssl::ssl::Error),
     ParserError(RsErrorParser),
+    // ServiceError(RsErrorService),
 }
 
 #[derive(Debug)]
@@ -11,6 +12,12 @@ pub enum RsErrorParser {
     IsRawHeader,
     UnknownHeaderType,
 }
+
+// use crate::parser::Packet;
+// #[derive(Debug)]
+// pub enum RsErrorService {
+//     NoMatchingServiceFound(Packet),
+// }
 
 impl From<std::io::Error> for RsError {
     fn from(err: std::io::Error) -> Self {

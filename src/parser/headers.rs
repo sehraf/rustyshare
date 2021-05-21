@@ -2,11 +2,13 @@ use byteorder::{BigEndian, ByteOrder, NetworkEndian};
 // use std::fmt;
 use crate::error::*;
 
-#[derive(Debug, Clone)]
+pub const HEADER_SIZE: usize = 8;
+
+#[derive(Debug, Clone, Copy)]
 pub enum Header {
-    Raw {
-        data: [u8; 8],
-    },
+    // Raw {
+    //     data: [u8; 8],
+    // },
     Slice {
         partial_flags: u8,
         slice_packet_id: u32,
@@ -28,89 +30,98 @@ pub enum Header {
 impl Header {
     fn version(&self) -> u8 {
         match self {
-            Header::Raw { .. } => 0xff,
+            // Header::Raw { .. } => 0xff,
             Header::Slice { .. } => 0x10,
             Header::Service { .. } => 0x02,
             Header::Class { .. } => 0x01,
         }
     }
 
-    pub fn try_parse(self) -> Result<Header, RsError> {
-        match self {
-            Header::Raw { data } => match data[0] {
-                0x02 => {
-                    // service
-                    let t = NetworkEndian::read_u32(&data[0..4]);
-                    let service = (t >> 8) as u16;
-                    let sub_type = t as u8;
-                    let size = NetworkEndian::read_u32(&data[4..8]);
-                    Ok(Header::Service {
-                        service,
-                        sub_type,
-                        size,
-                    })
-                }
-                0x10 => {
-                    // got Slice
-                    let partial_flags = data[1];
-                    // slice_packet_id += (header[2] as u32) << 24;
-                    // slice_packet_id += (header[3] as u32) << 16;
-                    // slice_packet_id += (header[4] as u32) << 8;
-                    // slice_packet_id += (header[5] as u32) << 0;
-                    let slice_packet_id = BigEndian::read_u32(&data[2..6]);
-                    // size += (header[6] as u16) << 8;
-                    // size += (header[7] as u16) << 0;
-                    let size = BigEndian::read_u16(&data[6..8]);
-                    Ok(Header::Slice {
-                        partial_flags,
-                        slice_packet_id,
-                        size,
-                    })
-                }
-                0x01 => {
-                    // got class
-                    let t = NetworkEndian::read_u32(&data[0..4]);
-                    let class = (t >> 16) as u8;
-                    let typ = (t >> 8) as u8;
-                    let sub_type = t as u8;
-                    let size = NetworkEndian::read_u32(&data[4..8]);
-                    Ok(Header::Class {
-                        class,
-                        typ,
-                        sub_type,
-                        size,
-                    })
-                }
-                _ => Err(RsError::ParserError(RsErrorParser::UnknownHeaderType)),
-            },
-            _ => Ok(self),
+    pub fn try_parse(data: [u8; 8]) -> Result<Header, RsError> {
+        match data[0] {
+            0x01 => {
+                // got class
+                let t = NetworkEndian::read_u32(&data[0..4]);
+                let class = (t >> 16) as u8;
+                let typ = (t >> 8) as u8;
+                let sub_type = t as u8;
+                let size = NetworkEndian::read_u32(&data[4..8]);
+                Ok(Header::Class {
+                    class,
+                    typ,
+                    sub_type,
+                    size,
+                })
+            }
+            0x02 => {
+                // service
+                let t = NetworkEndian::read_u32(&data[0..4]);
+                let service = (t >> 8) as u16;
+                let sub_type = t as u8;
+                let size = NetworkEndian::read_u32(&data[4..8]);
+                Ok(Header::Service {
+                    service,
+                    sub_type,
+                    size,
+                })
+            }
+            0x10 => {
+                // got Slice
+                let partial_flags = data[1];
+                // slice_packet_id += (header[2] as u32) << 24;
+                // slice_packet_id += (header[3] as u32) << 16;
+                // slice_packet_id += (header[4] as u32) << 8;
+                // slice_packet_id += (header[5] as u32) << 0;
+                let slice_packet_id = BigEndian::read_u32(&data[2..6]);
+                // size += (header[6] as u16) << 8;
+                // size += (header[7] as u16) << 0;
+                let size = BigEndian::read_u16(&data[6..8]);
+                Ok(Header::Slice {
+                    partial_flags,
+                    slice_packet_id,
+                    size,
+                })
+            }
+            _ => Err(RsError::ParserError(RsErrorParser::UnknownHeaderType)),
         }
     }
 
-    pub fn get_payload_size(&self) -> Result<usize, RsError> {
+    pub fn get_payload_size(&self) -> usize {
         match self {
             // can't handle raw!
-            Header::Raw { .. } => Err(RsError::ParserError(RsErrorParser::IsRawHeader)),
+            // Header::Raw { .. } => Err(RsError::ParserError(RsErrorParser::IsRawHeader)),
             // slice, "new format", size field is payload size (excluding 8 bytes for the header)
-            Header::Slice { ref size, .. } => Ok(size.clone() as usize),
+            Header::Slice { ref size, .. } => size.clone() as usize,
             // service + class, "old format", size field includes 8 byte header
             Header::Service { ref size, .. } | Header::Class { ref size, .. } => {
-                assert!(size >= &8);
-                Ok(size.clone() as usize - 8)
+                assert!(size >= &(HEADER_SIZE as u32));
+                size.clone() as usize - HEADER_SIZE
             }
         }
     }
 
     pub fn to_bytes(self) -> [u8; 8] {
         match self {
-            Header::Raw { data } => data,
+            // Header::Raw { data } => data,
             Header::Slice {
-                ..
-                // partial_flags,
-                // slice_packet_id,
-                // size,
+                partial_flags,
+                slice_packet_id,
+                size,
             } => {
-                panic!("not implemented");
+                let mut data: [u8; 8] = [0; 8];
+                // ((char*)mPkt_wpending)[mPkt_wpending_size+0x00] = PQISTREAM_SLICE_PROTOCOL_VERSION_ID_01 ;
+                data[0] = self.version();
+                // ((char*)mPkt_wpending)[mPkt_wpending_size+0x01] = partial_flags ;
+                data[1] = partial_flags;
+                // ((char*)mPkt_wpending)[mPkt_wpending_size+0x02] = uint8_t(slice_packet_id >> 24) & 0xff ;
+                // ((char*)mPkt_wpending)[mPkt_wpending_size+0x03] = uint8_t(slice_packet_id >> 16) & 0xff ;
+                // ((char*)mPkt_wpending)[mPkt_wpending_size+0x04] = uint8_t(slice_packet_id >>  8) & 0xff ;
+                // ((char*)mPkt_wpending)[mPkt_wpending_size+0x05] = uint8_t(slice_packet_id >>  0) & 0xff ;
+                BigEndian::write_u32(&mut data[2..6], slice_packet_id);
+                // ((char*)mPkt_wpending)[mPkt_wpending_size+0x06] = uint8_t(slice_size      >>  8) & 0xff ;
+                // ((char*)mPkt_wpending)[mPkt_wpending_size+0x07] = uint8_t(slice_size      >>  0) & 0xff ;
+                BigEndian::write_u16(&mut data[6..8], size);
+                data
             }
             Header::Service {
                 service,
@@ -174,6 +185,30 @@ impl From<ClassHeader> for Header {
     }
 }
 
+impl From<&Vec<u8>> for Header {
+    fn from(data: &Vec<u8>) -> Self {
+        assert_eq!(data.len(), HEADER_SIZE);
+        // copy into array
+        let mut raw = [0 as u8; HEADER_SIZE];
+        raw.copy_from_slice(&data[0..HEADER_SIZE]);
+
+        // crash here
+        Header::try_parse(raw).expect("failed to parse header!")
+    }
+}
+
+// impl TryFrom<&Vec<u8>> for Header {
+//     fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
+//         assert_eq!(data.len(), HEADER_SIZE);
+//         // copy into array
+//         let mut raw = [0 as u8; HEADER_SIZE];
+//         raw.copy_from_slice(&data[0..HEADER_SIZE]);
+
+//         // crash here
+//         Header::try_parse(raw)
+//     }
+// }
+
 #[derive(Debug)]
 pub struct SliceHeader {
     pub partial_flags: u8,
@@ -194,6 +229,16 @@ pub struct ClassHeader {
     pub typ: u8,
     pub sub_type: u8,
     pub size: u32,
+}
+
+impl ServiceHeader {
+    pub fn new(service: u16, sub_type: u8, payload: &Vec<u8>) -> ServiceHeader {
+        ServiceHeader {
+            service,
+            sub_type,
+            size: (payload.len() + HEADER_SIZE) as u32,
+        }
+    }
 }
 
 impl From<Header> for ServiceHeader {
@@ -261,8 +306,8 @@ mod tests {
     fn header_convert() {
         let a: [u8; 8] = serial_stuff::gen_slice_probe().try_into().unwrap();
 
-        let header = Header::Raw { data: a.clone() };
-        let header = header.try_parse().unwrap();
+        // let header = Header::Raw { data: a.clone() };
+        let header = Header::try_parse(a.clone()).unwrap();
 
         match header {
             Header::Service {

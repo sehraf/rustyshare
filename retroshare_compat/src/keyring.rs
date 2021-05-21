@@ -6,6 +6,8 @@ use openpgp::parse::PacketParser;
 use openpgp::parse::Parse;
 use sequoia_openpgp as openpgp;
 
+use crate::basics::*;
+
 const KEYRING_BASE_DIR: &'static str = "pgp";
 const KEYRING_PUBKEY: &'static str = "retroshare_public_keyring.gpg";
 const KEYRING_PRIVKEY: &'static str = "retroshare_secret_keyring.gpg";
@@ -85,7 +87,7 @@ impl Keyring {
 
     pub fn get_key_by_id_bytes(
         &self,
-        id_in_bytes: &[u8],
+        id_in_bytes: &PgpId,
         priv_key: bool,
     ) -> Option<&openpgp::Cert> {
         let ring = if priv_key {
@@ -94,7 +96,7 @@ impl Keyring {
             &self.public_keys
         };
 
-        ring.iter().find(|&x| x.keyid().as_bytes() == id_in_bytes)
+        ring.iter().find(|&x| x.keyid().as_bytes() == id_in_bytes.0)
     }
 
     #[allow(dead_code)]

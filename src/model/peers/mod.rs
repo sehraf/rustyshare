@@ -4,11 +4,11 @@ use std::sync::{Weak, RwLock, RwLockReadGuard};
 
 use location::Location;
 use sequoia_openpgp as openpgp;
+use retroshare_compat::basics::*;
 
 pub mod location;
 // use crate::error::RsError;
 // use crate::model::{DataCore, PeerCommand};
-use crate::retroshare_compat::*;
 // use location::Location;
 
 pub struct Peer {
@@ -30,35 +30,11 @@ impl Peer {
         }
     }
 
-    // pub fn send(&mut self, cmd: PeerCommand) -> Result<(), RsError> {
-    //     match cmd {
-    //         // PeerCommand::Thread(_) => {
-    //         //     // pass down the command
-    //         //     let mut errors: Vec<RsError> = vec![];
-    //         //     for loc in &mut self.locations {
-    //         //         match loc.send(cmd) {
-    //         //             Err(err) => errors.push(err),
-    //         //             _ => {}
-    //         //         }
-    //         //     }
-    //         //     if errors.is_empty() {
-    //         //         return Ok(());
-    //         //     } else {
-    //         //         return Err(RsError::Generic);
-    //         //     }
-    //         // }
-    //         PeerCommand::Thread(_) => {},
-    //         PeerCommand::Send(_) => {},
-    //         _ => {},
-    //     }
-    //     Err(RsError::Generic)
-    // }
-
     pub fn get_name(&self) -> &String {
         &self.name
     }
 
-    pub fn get_pgp_id(&self) -> &[u8; 8] {
+    pub fn get_pgp_id(&self) -> &PgpId {
         &self.pgp_id
     }
 

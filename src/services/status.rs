@@ -1,12 +1,10 @@
+use retroshare_compat::read_u32;
 use std::time::SystemTime;
 
-use crate::{
-    parser::{
-        headers::{Header, ServiceHeader},
+use crate::{parser::{
+        headers::{self, Header, ServiceHeader},
         Packet,
-    },
-    serial_stuff, services,
-};
+    }, serial_stuff, services::{HandlePacketResult, Service}, utils::simple_stats::StatsCollection};
 
 const STATUS_SERVICE: u16 = 0x0102;
 const STATUS_SUB_SERVICE: u8 = 0x01;
@@ -14,7 +12,7 @@ const STATUS_SUB_SERVICE: u8 = 0x01;
 const STATUS_PACKET: Header = Header::Service {
     service: STATUS_SERVICE,
     sub_type: STATUS_SUB_SERVICE,
-    size: 8 + 4 + 4,
+    size: headers::HEADER_SIZE as u32 + 4 + 4, // fixed, header + 2 u32
 };
 
 // const uint32_t RS_STATUS_OFFLINE  = 0x0000;
@@ -67,6 +65,7 @@ impl ToString for StatusValue {
     }
 }
 
+/// Implements a status stub that sends "online" to the other peer and consums any incoming packets
 pub struct Status {
     sent: bool,
 }
@@ -76,47 +75,57 @@ impl Status {
         Status { sent: false }
     }
 
-    pub fn handle_incoming(&self, header: &ServiceHeader, payload: &Vec<u8>) -> Option<Vec<u8>> {
+    pub fn handle_incoming(
+        &self,
+        header: &ServiceHeader,
+        mut packet: Packet,
+    ) -> HandlePacketResult {
         assert_eq!(header.service, STATUS_SERVICE);
         assert_eq!(header.sub_type, STATUS_SUB_SERVICE);
-        assert_eq!(payload.len(), 8);
+        assert_eq!(packet.payload.len(), 8);
 
+        let _ = read_u32(&mut packet.payload); // status time
         println!(
-            "received status {}",
-            StatusValue::from(serial_stuff::read_u32(payload, &mut 4)).to_string()
+            "[status] received status {}",
+            StatusValue::from(read_u32(&mut packet.payload)).to_string()
         );
 
-        None
+        HandlePacketResult::Handled(None)
     }
 }
 
-impl services::Service for Status {
+impl Service for Status {
     fn get_id(&self) -> u16 {
         STATUS_SERVICE
     }
 
-    fn handle_packet(&self, packet: Packet) -> Option<Vec<u8>> {
-        return self.handle_incoming(&packet.header.into(), &packet.data);
+    fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
+        self.handle_incoming(&packet.header.into(), packet)
     }
 
-    fn tick(&mut self) -> Option<Vec<Vec<u8>>> {
+    fn tick(&mut self, _stats: &mut StatsCollection) -> Option<Vec<Packet>> {
         if !self.sent {
             self.sent = true;
 
             // built packet
-            let mut data = STATUS_PACKET.to_bytes().to_vec();
-            let mut offset: usize = 8;
+            let mut payload = vec![];
+            let header = STATUS_PACKET;
+            let mut offset: usize = 0;
 
             // sendTime
             let now = SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("Time went backwards");
-            serial_stuff::write_u32(&mut data, &mut offset, now.as_secs() as u32);
+            serial_stuff::write_u32(&mut payload, &mut offset, now.as_secs() as u32);
 
             // status
-            serial_stuff::write_u32(&mut data, &mut offset, StatusValue::Online.into());
+            serial_stuff::write_u32(&mut payload, &mut offset, StatusValue::Online.into());
 
-            return Some(vec![data]);
+            assert_eq!(offset, payload.len());
+            assert_eq!(offset, header.get_payload_size());
+
+            let p = Packet::new_without_location(header, payload);
+            return Some(vec![p]);
         }
         None
     }

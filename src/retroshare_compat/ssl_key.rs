@@ -1,13 +1,14 @@
 // use openssl::rsa::Rsa;
 
-use openpgp::cert::prelude::*;
-use openpgp::crypto::SessionKey;
-use openpgp::parse::{stream::*, Parse};
-use openpgp::policy::Policy;
-use openpgp::policy::StandardPolicy as P;
+use openpgp::{
+    cert::prelude::*,
+    crypto::SessionKey,
+    parse::{stream::*, Parse},
+    policy::{Policy, StandardPolicy as P},
+    types::SymmetricAlgorithm,
+};
 use sequoia_openpgp as openpgp;
 // use openpgp::serialize::stream::*;
-use openpgp::types::SymmetricAlgorithm;
 
 // use rustls;
 
@@ -53,7 +54,7 @@ impl SslKey {
     ) -> Result<(openssl::x509::X509, PKey<openssl::pkey::Private>), std::io::Error> {
         // decrypt (ssl)key passphrase
         let full_path = localtion_path.join("keys/");
-        let password = SslKey::decrypt_passphrase(&full_path, pgp, pw).unwrap();
+        let password = SslKey::decrypt_passphrase(&full_path, pgp, pw)?;
 
         // user_cert.pem
         let mut user_cert_file = File::open(&full_path.join("user_cert.pem"))?;
@@ -65,24 +66,8 @@ impl SslKey {
         let mut user_pk = Vec::new();
         user_pk_file.read_to_end(&mut user_pk)?;
 
-        let user_cert = openssl::x509::X509::from_pem(&user_cert).unwrap();
+        let user_cert = openssl::x509::X509::from_pem(&user_cert)?;
         let user_pk = PKey::private_key_from_pem_passphrase(&user_pk, password.as_ref()).unwrap();
-
-        {
-            // let pkey = user_pk.private_key_to_der().unwrap();
-            // let base64 = base64::encode(&pkey);
-
-            // println!("ssl pw: {:?}", base64::encode(&password));
-            // println!("ssl key: {:?}", base64);
-
-            // let path = path::Path::new("/tmp/key.der");
-            // let mut file = File::create(&path).unwrap_or_else(|_| {
-            //     File::open(&path).unwrap()
-            // });
-            // file.write(b"-----BEGIN RSA PRIVATE KEY-----\n").unwrap();
-            // file.write(&base64.into_bytes()).unwrap();
-            // file.write(b"-----END RSA PRIVATE KEY-----\n").unwrap();
-        }
 
         Ok((user_cert, user_pk))
     }
@@ -115,7 +100,7 @@ impl SslKey {
 
         // Decrypt the message.
         let mut plaintext = Vec::new();
-        decrypt(p, &mut plaintext, &msg, &key, &pw).unwrap();
+        decrypt(p, &mut plaintext, &msg, &key, &pw).or_else(|_| Err(std::io::ErrorKind::Other))?;
 
         Ok(plaintext)
     }
@@ -200,7 +185,7 @@ pub fn decrypt(
     let helper = Helper {
         policy,
         secret: recipient,
-        password: password,
+        password,
     };
 
     // Now, create a decryptor with a helper using the given Certs.
@@ -261,16 +246,12 @@ impl<'a> DecryptionHelper for Helper<'a> {
             // .with_policy(self.policy, None)
             // .for_transport_encryption()
             .nth(0)
-            .unwrap()
+            .expect("failed to get encryption key!")
             .key()
             .clone();
 
         // The secret key is not encrypted.
-        let mut pair = key
-            .decrypt_secret(self.password)
-            .unwrap()
-            .into_keypair()
-            .unwrap();
+        let mut pair = key.decrypt_secret(self.password)?.into_keypair().unwrap();
 
         pkesks[0]
             .decrypt(&mut pair, sym_algo)

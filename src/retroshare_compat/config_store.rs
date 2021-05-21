@@ -1,16 +1,18 @@
-use openssl::envelope;
-use openssl::pkey::PKey;
-use openssl::symm::Cipher;
-use std::fs::File;
-use std::io::Read;
-use std::path;
-
-use crate::serial_stuff;
+use byteorder::{ByteOrder, NetworkEndian};
+use openssl::{envelope, pkey::PKey, symm::Cipher};
+use std::{fs::File, io::Read, path};
 
 pub fn decryp_file(
     file: &path::Path,
     key: &PKey<openssl::pkey::Private>,
 ) -> Result<Vec<u8>, std::io::Error> {
+    let read_u32 = |data: &Vec<u8>, offset: &mut usize| -> u32 {
+        const SIZE: usize = 4;
+        let r = NetworkEndian::read_u32(&data[*offset..*offset + SIZE]);
+        *offset += SIZE;
+        r
+    };
+
     let cipher = Cipher::aes_128_cbc();
 
     let mut enc_file = match File::open(&file) {
@@ -32,7 +34,7 @@ pub fn decryp_file(
 
     let mut offset: usize = 0;
     // read encryption key size
-    let size_et = serial_stuff::read_u32(&data_enc, &mut offset) as usize;
+    let size_et = read_u32(&data_enc, &mut offset) as usize;
     // read key
     let encrypted_key = &data_enc[offset..offset + size_et];
     offset += size_et;

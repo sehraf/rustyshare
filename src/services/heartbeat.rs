@@ -5,7 +5,8 @@ use crate::{
         headers::{Header, ServiceHeader},
         Packet,
     },
-    services,
+    services::{HandlePacketResult, Service},
+    utils::simple_stats::StatsCollection,
 };
 
 const HEARTBEAT_SERVICE: u16 = 0x0016;
@@ -28,30 +29,32 @@ impl Heartbeat {
         }
     }
 
-    pub fn handle_incoming(&self, header: &ServiceHeader, payload: &Vec<u8>) -> Option<Vec<u8>> {
+    pub fn handle_incoming(&self, header: &ServiceHeader, packet: Packet) -> HandlePacketResult {
         assert_eq!(header.service, HEARTBEAT_SERVICE);
         assert_eq!(header.sub_type, HEARTBEAT_SUB_SERVICE);
-        assert_eq!(payload.len(), 0);
+        assert_eq!(packet.payload.len(), 0);
 
-        println!("received heart beat");
+        // println!("received heart beat");
 
-        None
+        HandlePacketResult::Handled(None)
     }
 }
 
-impl services::Service for Heartbeat {
+impl Service for Heartbeat {
     fn get_id(&self) -> u16 {
         HEARTBEAT_SERVICE
     }
 
-    fn handle_packet(&self, packet: Packet) -> Option<Vec<u8>> {
-        return self.handle_incoming(&packet.header.into(), &packet.data);
+    fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
+        self.handle_incoming(&packet.header.into(), packet)
     }
 
-    fn tick(&mut self) -> Option<Vec<Vec<u8>>> {
+    fn tick(&mut self, _stats: &mut StatsCollection) -> Option<Vec<Packet>> {
         if self.last_send.elapsed() >= HEARTBEAT_INTERVAL {
             self.last_send = Instant::now();
-            return Some(vec![HEARTBEAT_PACKET.to_bytes().to_vec()]);
+
+            let packet = Packet::new_without_location(HEARTBEAT_PACKET, vec![]);
+            return Some(vec![packet]);
         }
         None
     }

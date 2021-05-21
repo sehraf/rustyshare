@@ -43,7 +43,7 @@ impl Builder {
         let stream = match self.ssl_connector.connect("sehraf", socket) {
             Ok(s) => s,
             Err(why) => {
-                println!("hand shake failure: {}", why);
+                println!("handshake failure: {}", why);
                 return None;
             }
         };
@@ -74,7 +74,7 @@ impl Builder {
     fn get_ssl_connector(keystore: &SslKeyPair) -> SslConnector {
         // ssl
         let mut builder =
-            SslConnector::builder(SslMethod::tls()).expect("failed to creat connector builder");
+            SslConnector::builder(SslMethod::tls()).expect("failed to create connector builder");
         builder.set_certificate(&keystore.0).unwrap();
         builder.set_private_key(&keystore.1).unwrap();
         builder

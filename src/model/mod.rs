@@ -1,34 +1,30 @@
 use std::{
+    collections::HashSet,
     net::{SocketAddr, TcpStream},
     sync::{mpsc, Arc},
 };
 
 use openssl::{pkey, x509};
 // use sequoia_openpgp as openpgp;
+use retroshare_compat::{basics::*, service_info::RsServiceInfo, tlv::TlvIpAddressInfo};
 
 pub mod peers;
 use peers::{location::Location, Peer};
 
 use crate::{
-    // error,
-    parser::{headers::Header, Packet},
-    retroshare_compat::{keyring::Keyring, *},
-    serial_stuff,
-    // services::Services,
-    transport::{
-        connection::PeerConnection,
-        ssl::SslKeyPair,
-        // tcp::TcpTransport,
-        ConnectionType,
-        Transport,
-    },
+    parser::Packet,
+    services::*,
+    transport::{connection::PeerConnection, ssl::SslKeyPair, ConnectionType, Transport},
+    utils::simple_stats::StatsCollection,
 };
 
 #[derive(Debug)]
 pub enum PeerCommand {
     Thread(PeerThreadCommand),
-    PeerUpdate(PeerStatus),
+    PeerUpdate(PeerUpdate),
+    ServiceInfoUpdate(Vec<RsServiceInfo>),
     Send(Packet),
+    Receive(Packet),
 }
 
 #[derive(Debug)]
@@ -42,326 +38,276 @@ pub enum PeerThreadCommand {
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
-pub enum PeerStatus {
-    Online(LocationId),
-    Offline(LocationId),
+pub enum PeerUpdate {
+    Status(PeerState),
+    Address(PeerId, HashSet<TlvIpAddressInfo>, HashSet<TlvIpAddressInfo>),
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub enum PeerState {
+    Connected(PeerId, SocketAddr),
+    NotConnected(PeerId),
 }
 
 pub struct DataCore {
     own_key_pair: SslKeyPair,
+    own_location: PeerId,
+    own_location_obj: Arc<Location>, // stored for faster access
+
+    services: Services,
 
     rx: mpsc::Receiver<PeerCommand>,
     tx: mpsc::Sender<PeerCommand>,
 
+    event_listener: Vec<mpsc::Sender<PeerCommand>>,
+
+    #[allow(dead_code)]
     peers: Vec<Arc<Peer>>,
     locations: Vec<Arc<Location>>,
 
+    // TODO one vec is probably enough
     bootup: Vec<(
-        LocationId,
+        PeerId,
         mpsc::Sender<PeerCommand>,
         std::thread::JoinHandle<()>,
     )>,
     worker: Vec<(
-        LocationId,
+        PeerId,
         mpsc::Sender<PeerCommand>,
         std::thread::JoinHandle<()>,
     )>,
+
+    sick: bool,
 }
 
 impl DataCore {
-    pub fn new(pub_key: x509::X509, priv_key: pkey::PKey<openssl::pkey::Private>) -> DataCore {
+    pub fn new(
+        pub_key: x509::X509,
+        priv_key: pkey::PKey<openssl::pkey::Private>,
+        friends: (Vec<Arc<Peer>>, Vec<Arc<Location>>),
+        peer_id: &PeerId,
+    ) -> DataCore {
         let (tx, rx) = mpsc::channel();
         let keys = Arc::new((pub_key, priv_key));
 
-        DataCore {
+        // find own locations
+        let me = friends
+            .1
+            .iter()
+            .find(|&loc| loc.get_location_id() == peer_id)
+            .expect("can't find own location!");
+
+        let mut dc = DataCore {
             own_key_pair: keys,
-            peers: vec![],
-            locations: vec![],
+            own_location: peer_id.clone(),
+            own_location_obj: me.clone(),
+
+            services: Services::new(),
+
+            peers: friends.0,
+            locations: friends.1,
             rx,
             tx,
+
+            event_listener: vec![],
+
             bootup: vec![],
             worker: vec![],
-        }
+
+            sick: false,
+        };
+
+        dc.services = Services::get_core_services(&mut dc);
+
+        dc
     }
 
-    // this should live somewhere else eventually
-    pub fn load_peers(&mut self, data: Vec<u8>, keys: &Keyring, ssl_me: &str) -> Vec<SocketAddr> {
-        let mut offset = 0;
-        let data_size = data.len();
-        let mut persons: Vec<Arc<Peer>> = vec![];
-        let mut locations: Vec<Arc<Location>> = vec![];
-
-        // helper for reading a varying amount of bytes
-        // let read = |data: &Vec<u8>, offset: &mut usize, len: &usize| -> Vec<u8> {
-        //     let d = data[*offset..*offset + len].to_owned();
-        //     *offset += len;
-        //     d
-        // };
-
-        while offset < data_size {
-            // get header
-            let mut header: [u8; 8] = [0; 8];
-            header.copy_from_slice(&data[offset..offset + 8]);
-            let (class, typ, sub_type, packet_size) =
-                match (Header::Raw { data: header }.try_parse()) {
-                    Ok(header) => match header {
-                        Header::Class {
-                            class,
-                            typ,
-                            sub_type,
-                            size,
-                        } => (class, typ, sub_type, size),
-                        _ => panic!("This should not happen! Expected a class header!"),
-                    },
-                    Err(why) => {
-                        panic!("failed to read header: {:?}", why);
-                    }
-                };
-            // header read
-            offset += 8;
-
-            // used for parsing individual packets
-            let mut offset_inner = offset.clone();
-
-            // used for tracking packet end
-            offset += packet_size as usize - 8; // header was already removed
-
-            match class {
-                // const uint8_t RS_PKT_CLASS_BASE      = 0x01;
-                // const uint8_t RS_PKT_CLASS_CONFIG    = 0x02;
-                0x02 => match typ {
-                    // const uint8_t RS_PKT_TYPE_GENERAL_CONFIG = 0x01;
-                    0x01 => {
-                        // RsGeneralConfigSerialiser
-                        match sub_type {
-                            // const uint8_t RS_PKT_SUBTYPE_KEY_VALUE = 0x01;
-                            0x01 => {
-                                // const uint16_t TLV_TYPE_KEYVALUESET   = 0x1011;
-                                let t = serial_stuff::read_u16(&data, &mut offset_inner);
-                                assert_eq!(t, 0x1011);
-
-                                // size without 6 byte TLV header
-                                let size = serial_stuff::read_u32(&data, &mut offset_inner);
-                                assert_eq!(size as usize - 6 + offset_inner, offset);
-
-                                while offset_inner < offset {
-                                    // RsTlvKeyValue kv;
-                                    //  - this are just a bunch of strings with an header
-
-                                    // header
-                                    // const uint16_t TLV_TYPE_KEYVALUE      = 0x1010;
-                                    let t = serial_stuff::read_u16(&data, &mut offset_inner); // type
-                                    let size = serial_stuff::read_u32(&data, &mut offset_inner); // len
-                                    let check = offset_inner;
-                                    assert_eq!(t, 0x1010);
-
-                                    // const uint16_t TLV_TYPE_STR_KEY       = 0x0053;
-                                    let key = serial_stuff::read_string_typed(
-                                        &data,
-                                        &mut offset_inner,
-                                        &0x0053,
-                                    );
-                                    // const uint16_t TLV_TYPE_STR_VALUE     = 0x0054;
-                                    let value = serial_stuff::read_string_typed(
-                                        &data,
-                                        &mut offset_inner,
-                                        &0x0054,
-                                    );
-                                    dbg!(key, value);
-
-                                    // this must be the end
-                                    assert_eq!(offset_inner, check + size as usize - 6);
-                                }
-                            }
-                            m => println!(
-                                "unable to handle RsGeneralConfigSerialiser sub type {:02X}",
-                                m
-                            ),
-                        }
-                    }
-                    // const uint8_t RS_PKT_TYPE_PEER_CONFIG    = 0x02;
-                    0x2 => {
-                        // RsPeerConfigSerialiser
-                        match sub_type {
-                            // const uint8_t RS_PKT_SUBTYPE_PEER_STUN             = 0x02;
-                            // const uint8_t RS_PKT_SUBTYPE_PEER_NET              = 0x03;
-                            0x3 => {
-                                let (pgp_id, location, peer_id, ips) =
-                                    serial_stuff::read_peer_net_item(&data, &mut offset_inner);
-
-                                // lookup key
-                                if let Some(pgp) = keys.get_key_by_id_bytes(&pgp_id, false) {
-                                    let name = {
-                                        let mut s2: String = String::new();
-                                        for ua in pgp.userids() {
-                                            let s3 = String::from_utf8_lossy(ua.value());
-                                            s2.push_str(&s3);
-                                        }
-                                        s2
-                                    };
-
-                                    println!(
-                                        "adding peer {:?} with location {:?}",
-                                        &name, &location
-                                    );
-
-                                    let mut peer =
-                                        persons.iter_mut().find(|p| p.get_pgp_id() == &pgp_id);
-
-                                    if peer.is_none() {
-                                        persons.push(Arc::new(Peer::new(
-                                            name,
-                                            pgp.clone(),
-                                            pgp_id,
-                                        )));
-                                        peer = persons.last_mut();
-                                    }
-
-                                    // this shall not crash
-                                    let peer = peer.unwrap();
-
-                                    let loc = Arc::new(Location::new(
-                                        location,
-                                        peer_id,
-                                        peer.get_pgp_id().clone(),
-                                        ips,
-                                        Arc::downgrade(peer),
-                                    ));
-
-                                    peer.add_location(Arc::downgrade(&loc));
-                                    locations.push(loc);
-                                }
-                            }
-                            // const uint8_t RS_PKT_SUBTYPE_PEER_GROUP_deprecated = 0x04;
-                            // const uint8_t RS_PKT_SUBTYPE_PEER_PERMISSIONS      = 0x05;
-                            // const uint8_t RS_PKT_SUBTYPE_PEER_BANDLIMITS       = 0x06;
-                            // const uint8_t RS_PKT_SUBTYPE_NODE_GROUP            = 0x07;
-                            m => println!(
-                                "unable to handle RsPeerConfigSerialiser sub type {:02X}",
-                                m
-                            ),
-                        }
-                    }
-                    // const uint8_t RS_PKT_TYPE_CACHE_CONFIG   = 0x03;
-                    // const uint8_t RS_PKT_TYPE_FILE_CONFIG    = 0x04;
-                    // const uint8_t RS_PKT_TYPE_PLUGIN_CONFIG  = 0x05;
-                    // const uint8_t RS_PKT_TYPE_HISTORY_CONFIG = 0x06;
-                    m => println!("unable to handle type {:02X}", m),
-                },
-                m => println!("unable to handle class {:02X}", m),
-            }
-        }
-        assert_eq!(offset, data_size);
-
-        // summarize
-        println!("loaded the following:");
-        for person in &persons {
-            println!(" - person '{}'", person.get_name());
-            let locs = person.get_locations();
-            for loc in locs.iter() {
-                let loc = loc.upgrade();
-                if let Some(loc) = loc {
-                    println!("   - location '{}'", loc.get_name());
-                } else {
-                    unreachable!("We just allocated the locations, an upgrade should work fine!");
-                }
-            }
+    fn connect(&mut self, loc: &Arc<Location>) {
+        // this is usefull for debugging but not should be disabled on release builds
+        // #[cfg(debug_assertions)]
+        if loc.get_location_id() == &self.own_location {
+            return;
         }
 
-        // move everything to main structure
-        self.peers = persons;
-        self.locations = locations;
+        // copy everything
+        let keys = self.own_key_pair.to_owned();
+        let outer_tx = self.tx.to_owned();
+        let (handler_tx, inner_rx) = mpsc::channel();
 
-        // return own network address ( this hack is worse than it looks )
-        let me = self
-            .locations
+        // turn IPs into ConnectionType::Tcp
+        let ips = loc.get_ips();
+        let mut local: Vec<ConnectionType> = ips
+            .0
             .iter()
-            .find(|loc| {
-                let id = loc.get_location_id();
-                let mut id_str = String::new();
-                for byte in id {
-                    // the x must be lower case
-                    id_str.push_str(&format!("{:02x}", byte));
+            .map(|&val| ConnectionType::Tcp(val.addr.0))
+            .collect();
+        let mut external: Vec<ConnectionType> = ips
+            .1
+            .iter()
+            .map(|&val| ConnectionType::Tcp(val.addr.0))
+            .collect();
+        local.append(&mut external);
+        let ips = local;
+
+        // let ips: Vec<ConnectionType> =
+        //     ips.iter().map(|&val| ConnectionType::Tcp(val)).collect();
+
+        let loc_id = loc.get_location_id().to_owned();
+        let loc_key = loc.get_person().upgrade().unwrap().get_pgp().to_owned();
+
+        let handler = std::thread::spawn(move || {
+            for ip in ips {
+                if let ConnectionType::Tcp(target) = ip {
+                    let builder = crate::transport::tcp_openssl::Builder::new(&keys);
+                    if let Some(stream) = builder.connect(&target, &loc_key) {
+                        let transport = Transport {
+                            target: ip.to_owned(),
+                            stream,
+                        };
+                        PeerConnection::new(
+                            loc_id.to_owned(),
+                            transport,
+                            inner_rx,
+                            outer_tx.to_owned(),
+                        )
+                        .run();
+                        break;
+                    }
                 }
-                dbg!(&ssl_me, &id_str);
-                id_str == ssl_me
-            })
-            .expect("can't find own location!");
-        me.get_ips().to_owned()
+            }
+
+            // failed to connect or exited
+            // TODO handle connection close (peer went offline) better
+            outer_tx
+                .send(PeerCommand::PeerUpdate(PeerUpdate::Status(
+                    PeerState::NotConnected(loc_id.clone()),
+                )))
+                .unwrap();
+        });
+
+        self.bootup.push((loc_id, handler_tx, handler));
     }
 
-    pub fn connect(&mut self) {
-        for loc in self.locations.iter() {
-            // copy everything
-            let keys = self.own_key_pair.clone();
-            let outer_tx = self.tx.clone();
-            let (handler_tx, inner_rx) = mpsc::channel();
-
-            // turn IPs into ConnectionType::Tcp
-            let ips: Vec<ConnectionType> = loc
-                .get_ips()
-                .iter()
-                .map(|&val| ConnectionType::Tcp(val))
-                .collect();
-
-            let loc_id = loc.get_location_id().clone();
-            let loc_key = loc.get_person().upgrade().unwrap().get_pgp().clone();
-
-            let handler = std::thread::spawn(move || {
-                for ip in ips {
-                    if let ConnectionType::Tcp(target) = ip {
-                        let builder = crate::transport::tcp_openssl::Builder::new(&keys);
-                        if let Some(stream) = builder.connect(&target, &loc_key) {
-                            let transport = Transport {
-                                target: ip.clone(),
-                                stream,
+    pub fn tick(&mut self, stats: &mut StatsCollection) -> bool {
+        // handle incoming commands
+        while let Ok(cmd) = match self.rx.try_recv() {
+            Ok(cmd) => Ok(cmd),
+            Err(std::sync::mpsc::TryRecvError::Empty) => Err(()),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                panic!("is this not supposed to happen?!")
+            }
+        } {
+            match cmd {
+                PeerCommand::PeerUpdate(state) => {
+                    match &state {
+                        PeerUpdate::Status(state) => {
+                            // update peer state
+                            let loc = match state {
+                                PeerState::Connected(loc, _) => loc,
+                                PeerState::NotConnected(loc) => loc,
                             };
-                            PeerConnection::new(
-                                loc_id.clone(),
-                                transport,
-                                inner_rx,
-                                outer_tx.clone(),
-                            )
-                            .run();
-                            break;
+                            let entry = self
+                                .get_location_by_id(loc)
+                                .expect("failed to find location");
+                            entry.set_status(&state);
+
+                            match state {
+                                // updates
+                                PeerState::Connected(loc, _addr) => {
+                                    if let Some(pos) =
+                                        self.bootup.iter().position(|val| &val.0 == loc)
+                                    {
+                                        println!("[core] booted up location {}", &loc);
+                                        let entry = self.bootup.remove(pos);
+
+                                        // now send service information
+                                        let services: Vec<RsServiceInfo> = self
+                                            .services
+                                            .get_services()
+                                            .map(|s| s.into())
+                                            .collect();
+                                        entry
+                                            .1
+                                            .send(PeerCommand::ServiceInfoUpdate(services))
+                                            .expect("failed to send services to peer worker!");
+
+                                        self.worker.push(entry);
+                                    } else {
+                                        unimplemented!();
+                                    }
+                                }
+                                PeerState::NotConnected(loc) => {
+                                    if let Some(pos) =
+                                        self.bootup.iter().position(|val| &val.0 == loc)
+                                    {
+                                        // println!("failed to connect location {}", &loc); // quite noisy
+                                        let _ = self.bootup.remove(pos);
+                                    } else if let Some(pos) =
+                                        self.worker.iter().position(|val| &val.0 == loc)
+                                    {
+                                        println!("[core] shutting down location {}", &loc);
+                                        let _ = self.worker.remove(pos);
+                                    } else {
+                                        println!("[core] unable to find {} in both worker lists!", loc);
+                                        unimplemented!();
+                                    }
+                                }
+                            }
+                        }
+                        PeerUpdate::Address(ssl_id, local, external) => {
+                            let peer = self
+                                .locations
+                                .iter()
+                                .find(|&loc| loc.get_location_id() == ssl_id);
+                            if peer.is_none() {
+                                println!("[core] got an update for an unknown location!");
+                                println!(" - ssl_id: {}", ssl_id);
+                                println!("our known locations:");
+                                self.locations.iter().for_each(|loc| {
+                                    println!(" - {} {}", loc.get_location_id(), loc.get_name())
+                                });
+                            } else {
+                                let peer = peer.unwrap();
+                                let mut ip_addresses = peer.get_ips_rw();
+
+                                for ip in local {
+                                    if ip_addresses.0.insert(ip.to_owned()) {
+                                        println!(
+                                            "[core] updating local ip {} of peer {} {}",
+                                            ip,
+                                            peer.get_person()
+                                                .upgrade()
+                                                .expect("location is missing it's identity!")
+                                                .get_name(),
+                                            peer.get_name()
+                                        );
+                                    }
+                                }
+                                for ip in external {
+                                    if ip_addresses.0.insert(ip.to_owned()) {
+                                        println!(
+                                            "[core] updating external ip {} of peer {} {}",
+                                            ip,
+                                            peer.get_person()
+                                                .upgrade()
+                                                .expect("location is missing it's identity!")
+                                                .get_name(),
+                                            peer.get_name()
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
-                }
 
-                // failed to connect
-                outer_tx
-                    .send(PeerCommand::PeerUpdate(PeerStatus::Offline(loc_id.clone())))
-                    .unwrap();
-            });
-
-            self.bootup.push((loc_id, handler_tx, handler));
-        }
-    }
-
-    pub fn tick(&mut self) -> bool {
-        match self.rx.try_recv() {
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                panic!("is this supposed to happen?!")
-            }
-            Ok(cmd) => match cmd {
-                PeerCommand::PeerUpdate(PeerStatus::Online(loc)) => {
-                    if let Some(pos) = self.bootup.iter().position(|val| val.0 == loc) {
-                        println!("booted up location {:x?}", &loc);
-                        let entry = self.bootup.remove(pos);
-                        self.worker.push(entry);
+                    // handle event listener
+                    for sink in &self.event_listener {
+                        sink.send(PeerCommand::PeerUpdate(state.clone()))
+                            .expect("failed to communicate with service");
                     }
                 }
-                PeerCommand::PeerUpdate(PeerStatus::Offline(loc)) => {
-                    if let Some(pos) = self.bootup.iter().position(|val| val.0 == loc) {
-                        // println!("shutting down location {:x?}", &loc);
-                        let _ = self.bootup.remove(pos);
-                    }
-                    if let Some(pos) = self.worker.iter().position(|val| val.0 == loc) {
-                        // println!("shutting down location {:x?}", &loc);
-                        let _ = self.worker.remove(pos);
-                    }
-                }
+
                 PeerCommand::Thread(PeerThreadCommand::Incoming(con)) => {
                     let addr = con.peer_addr().unwrap();
 
@@ -369,7 +315,7 @@ impl DataCore {
                     if let Some(stream) = builder.incoming(con) {
                         let outer_tx = self.tx.clone();
                         let (handle_tx, inner_rx) = mpsc::channel();
-                        let loc_id = [0; 16]; // TODO
+                        let loc_id = PeerId::default(); // TODO
 
                         let handle = std::thread::spawn(move || {
                             let transport = Transport {
@@ -382,15 +328,105 @@ impl DataCore {
                         self.worker.push((loc_id, handle_tx, handle));
                     }
                 }
-                _ => {}
-            },
+                PeerCommand::Send(packet) => {
+                    self.try_send_to_peer(packet);
+                }
+                PeerCommand::Receive(packet) => {
+                    // use crate::error::*;
+
+                    assert!(packet.has_location(), "no location set!");
+
+                    match self.services.handle_packet(packet) {
+                        // packet was locally handled and an answer was generated
+                        HandlePacketResult::Handled(Some(answer)) => self.try_send_to_peer(answer),
+                        // packet was locally handled and no answer was generated
+                        HandlePacketResult::Handled(None) => {}
+                        // packet was not locally handled as no fitting service was found
+                        HandlePacketResult::NotHandled(packet) => {
+                            println!(
+                                "[core] core received a packet that cannot be handled! {:?}",
+                                packet.header
+                            );
+                        }
+                        // something else went wrong
+                        HandlePacketResult::Error(why) => {
+                            println!("[core] failed to handle packet: {:?}", why)
+                        }
+                    }
+                }
+                m => {
+                    println!("[core] unhandled command: {:?}", m);
+                }
+            }
+        }
+
+        // handle services
+        if let Some(items) = self.services.tick_all(stats) {
+            // this can be optimazed probably
+            for item in items {
+                self.try_send_to_peer(item);
+            }
+        }
+
+        // handle connection attempts
+        let mut candidates: Vec<Arc<Location>> = vec![];
+        for loc in &self.locations {
+            if loc.try_reconnect() {
+                candidates.push(loc.clone());
+            }
+        }
+        for loc in candidates {
+            self.connect(&loc);
         }
 
         // self.worker.len() > 0 || self.bootup.len() > 0
-        true
+        !self.sick
     }
 
     pub fn get_tx(&self) -> mpsc::Sender<PeerCommand> {
         self.tx.clone()
+    }
+
+    fn try_send_to_peer(&self, packet: Packet) {
+        assert!(packet.has_location(), "no location set!");
+        let to = packet.peer_id;
+        if let Some(worker) = self.worker.iter().find(|&w| w.0 == to) {
+            worker
+                .1
+                .send(PeerCommand::Send(packet))
+                // .expect("failed to send to peer worker");
+                .unwrap_or_else(|_| {
+                    println!("[core] failed to send to peer worker");
+                })
+        }
+    }
+
+    pub fn get_own_location(&self) -> Arc<Location> {
+        self.own_location_obj.clone()
+    }
+
+    pub fn get_locations(&self) -> &Vec<Arc<Location>> {
+        &self.locations
+    }
+
+    pub fn get_location_by_id(&self, ssl_id: &PeerId) -> Option<&Arc<Location>> {
+        self.get_locations()
+            .iter()
+            .find(|&loc| loc.get_location_id() == ssl_id)
+    }
+
+    pub fn get_own_person(&self) -> Arc<Peer> {
+        // used stored location for O(1) lookup of own person
+        self.own_location_obj.get_person().upgrade().expect(
+            "Something went seriously wrong! Our own Peer information cannot be found anymore!",
+        )
+    }
+
+    pub fn get_persons(&self) -> &Vec<Arc<Peer>> {
+        &self.peers
+    }
+
+    pub fn subscribe_for_events(&mut self, receiver: mpsc::Sender<PeerCommand>) {
+        self.event_listener.push(receiver);
     }
 }
