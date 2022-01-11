@@ -1,11 +1,14 @@
 use byteorder::{ByteOrder, NetworkEndian};
-use openssl::{envelope, pkey::PKey, symm::Cipher};
+use openssl::{
+    envelope,
+    pkey::{self, PKey},
+    symm::Cipher,
+};
 use std::{fs::File, io::Read, path};
 
-pub fn decryp_file(
-    file: &path::Path,
-    key: &PKey<openssl::pkey::Private>,
-) -> Result<Vec<u8>, std::io::Error> {
+use super::ssl_key::SslKey;
+
+pub fn decryp_file(file: &path::Path, keys: SslKey) -> Result<Vec<u8>, std::io::Error> {
     let read_u32 = |data: &Vec<u8>, offset: &mut usize| -> u32 {
         const SIZE: usize = 4;
         let r = NetworkEndian::read_u32(&data[*offset..*offset + SIZE]);
@@ -44,7 +47,8 @@ pub fn decryp_file(
     // dbg!(size, offset);
 
     // start decryption
-    let mut env = envelope::Open::new(cipher, key, Some(iv), encrypted_key).unwrap();
+    let key: PKey<pkey::Private> = keys.into();
+    let mut env = envelope::Open::new(cipher, &key, Some(iv), encrypted_key).unwrap();
     // we meed at least space for "size" many bytes
     let mut data_dec = vec![];
     data_dec.resize(size, 0);

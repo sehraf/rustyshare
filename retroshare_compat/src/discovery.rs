@@ -384,11 +384,11 @@ pub fn write_rs_disc_contact_item(payload: &mut Vec<u8>, item: &DiscContactItem)
 // };
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct RsDiscIdentityListItem {
+pub struct DiscIdentityListItem {
     pub own_identity_list: Vec<GxsId>,
 }
 
-impl fmt::Display for RsDiscIdentityListItem {
+impl fmt::Display for DiscIdentityListItem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut first = true;
 

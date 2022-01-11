@@ -20,122 +20,6 @@ use crate::{
     },
 };
 
-// #[allow(dead_code)]
-// pub fn read_u8(data: &Vec<u8>, offset: &mut usize) -> u8 {
-//     const SIZE: usize = 1;
-//     let r = data[*offset..*offset + SIZE][0];
-//     *offset += SIZE;
-//     r
-// }
-// #[allow(dead_code)]
-// pub fn read_u16(data: &Vec<u8>, offset: &mut usize) -> u16 {
-//     const SIZE: usize = 2;
-//     let r = NetworkEndian::read_u16(&data[*offset..*offset + SIZE]);
-//     // println!("{:?}, {:?}", &data[*offset..*offset + SIZE], r);
-//     *offset += SIZE;
-//     r
-// }
-// #[allow(dead_code)]
-// pub fn read_u32(data: &Vec<u8>, offset: &mut usize) -> u32 {
-//     const SIZE: usize = 4;
-//     let r = NetworkEndian::read_u32(&data[*offset..*offset + SIZE]);
-//     *offset += SIZE;
-//     r
-// }
-// #[allow(dead_code)]
-// pub fn read_u64(data: &Vec<u8>, offset: &mut usize) -> u64 {
-//     const SIZE: usize = 8;
-//     let r = NetworkEndian::read_u64(&data[*offset..*offset + SIZE]);
-//     *offset += SIZE;
-//     r
-// }
-// #[allow(dead_code)]
-// pub fn read_string(data: &Vec<u8>, offset: &mut usize) -> String {
-//     let str_len: usize = read_u32(data, offset) as usize;
-//     let s = String::from_utf8(data[*offset..*offset + str_len].to_owned()).unwrap();
-//     *offset += str_len;
-//     return s;
-// }
-// pub fn read_string_typed(data: &Vec<u8>, offset: &mut usize, typ: &u16) -> String {
-//     // let old = offset.clone();
-//     let t = read_u16(&data, offset); // type
-//     let s = read_u32(&data, offset); // len
-//     assert_eq!(t, *typ);
-//     assert_eq!(s >= 6, true);
-//     let str_len = s as usize - 6; // remove tlv header length
-//     let string = String::from_utf8(data[*offset..*offset + str_len].to_owned()).unwrap();
-//     // let copy = &data[old..*offset + str_len];
-
-//     *offset += str_len;
-
-//     // let copy: Vec<u8> = Vec::from(copy);
-//     // println!("{}", hex::encode(copy));
-
-//     string
-// }
-// pub fn read_tlv_ip_addr(data: &Vec<u8>, offset: &mut usize) -> Option<SocketAddr> {
-//     // onyl peek values!
-//     let mut offset_copy = offset.clone();
-
-//     let t = read_u16(&data, &mut offset_copy); // type
-//     let s = read_u32(&data, &mut offset_copy); // len
-//     assert_eq!(t, 0x1072); // const uint16_t TLV_TYPE_ADDRESS       = 0x1072;
-
-//     if s == 6 {
-//         *offset = offset_copy;
-//         return None;
-//     }
-
-//     // type
-//     match read_u16(&data, &mut offset_copy) {
-//         // now use original offset!
-//         0x0085 => return read_tlv_ip_addr_v4(data, offset),
-//         0x0086 => return read_tlv_ip_addr_v6(data, offset),
-//         t => panic!("unkown ip type {:04X} size {:?}", t, s),
-//     }
-// }
-// pub fn read_tlv_ip_addr_v4(data: &Vec<u8>, offset: &mut usize) -> Option<SocketAddr> {
-//     let t = read_u16(&data, offset); // type
-//     let s = read_u32(&data, offset); // len
-//     assert_eq!(t, 0x1072); // const uint16_t TLV_TYPE_ADDRESS       = 0x1072;
-//     return match s {
-//         6 => None,
-//         // current header (6) + coming header (6) + ipv4 (4) + port(2)
-//         18 => {
-//             assert_eq!(read_u16(&data, offset), 0x0085); // type, const uint16_t TLV_TYPE_IPV4          = 0x0085;
-//             assert_eq!(read_u32(&data, offset), 12); // len
-//             let addr_loc_v4 = {
-//                 let ip = read_u32(&data, offset).swap_bytes(); // why?!
-//                 let port = read_u16(&data, offset).swap_bytes();
-//                 SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip)), port)
-//             };
-//             Some(addr_loc_v4)
-//         }
-//         m => panic!("unkown ipv4 size {:?}", m),
-//     };
-// }
-// pub fn read_tlv_ip_addr_v6(data: &Vec<u8>, offset: &mut usize) -> Option<SocketAddr> {
-//     let t = read_u16(&data, offset); // type
-//     let s = read_u32(&data, offset); // len
-//     assert_eq!(t, 0x1072); // const uint16_t TLV_TYPE_ADDRESS       = 0x1072;
-//     return match s {
-//         6 => None,
-//         // current header (6) + coming header (6) + ipv4 (16) + port(2)
-//         30 => {
-//             assert_eq!(read_u16(&data, offset), 0x0086); // type, const uint16_t TLV_TYPE_IPV6          = 0x0086;
-//             assert_eq!(read_u32(&data, offset), 24); // len
-//             let mut ip: u128 = 0;
-//             for _ in 0..4 {
-//                 ip = ip.overflowing_shl(32).0;
-//                 ip += read_u32(&data, offset) as u128;
-//             }
-//             let port = read_u16(&data, offset).swap_bytes(); // why?!
-//             let ip = SocketAddr::new(IpAddr::V6(Ipv6Addr::from(ip)), port);
-//             Some(ip)
-//         }
-//         m => panic!("unkown ipv6 size {:?}", m),
-//     };
-// }
 pub fn read_peer_net_item(
     data: &mut Vec<u8>,
 ) -> (
@@ -521,7 +405,7 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
                                 let key = read_string_typed(data, 0x0053);
                                 // const uint16_t TLV_TYPE_STR_VALUE     = 0x0054;
                                 let value = read_string_typed(data, 0x0054);
-                                println!("{}: {}", key, value);
+                                println!("[load_peers] KEY_VALUE {}: {}", key, value);
 
                                 assert_eq!(end, data.len());
                             }
@@ -593,7 +477,10 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
                                 // #define FLAGS_TAG_SERVICE_PERM 	0x380912
                                 let flags = read_u32(data);
 
-                                println!("[{:02}] {}: {:#032b}", i, pgp_id, flags);
+                                println!(
+                                    "[load_peers] PEER_PERMISSIONS [{:02}] {}: {:#032b}",
+                                    i, pgp_id, flags
+                                );
                             }
                         }
                         // const uint8_t RS_PKT_SUBTYPE_PEER_BANDLIMITS       = 0x06;
@@ -670,53 +557,4 @@ mod tests {
         let c = crate::services::service_info::gen_service_info(&list).to_bytes();
         assert_eq!(a, c);
     }
-
-    // #[test]
-    // fn service_info_probe_serde() {
-    //     // use retroshare_compat::{basics::*, service_info::*};
-    //     use retroshare_compat_derive::{from_retroshare_wire, to_retroshare_wire};
-
-    //     let mut a = vec![
-    //         // 2, 0, 32, 1, 0, 0, 0, 55, // header
-    //         // 0, 1, 0, 0, 0, 47, // TL
-    //         0, 1, 0, 0, 0, 41, // RsTlvGenericMapRef header
-    //         0, 1, 0, 0, 0, 10, // RsTlvParamRef key header
-    //         2, 16, 17, 0, //  RsTlvParamRef key
-    //         0, 1, 0, 0, 0, 25, // RsTlvParamRef value header
-    //         0, 0, 0, 3, // RsTlvParamRef value: String len
-    //         114, 116, 116, // RsTlvParamRef value: String
-    //         2, 16, 17, 0, // RsTlvParamRef value: service type
-    //         0, 1, 0, 0, // RsTlvParamRef value: version major/minor
-    //         0, 1, 0, 0, // RsTlvParamRef value: min version major/minor
-    //     ];
-
-    //     // let mut pairs: Vec<RsTlvGenericPairRef<u32, RsServiceInfo>> = Vec::new();
-    //     // pairs.push(RsTlvGenericPairRef {
-    //     //     m_key: RsTlvParamRef {
-    //     //         m_param: 0x02101100,
-    //     //     },
-    //     //     m_value: RsTlvParamRef {
-    //     //         m_param: RsServiceInfo {
-    //     //             m_service_name: String::from("rtt"),
-    //     //             m_min_version_major: 1,
-    //     //             m_min_version_minor: 0,
-    //     //             m_version_major: 1,
-    //     //             m_version_minor: 0,
-    //     //             m_service_type: 0x02101100,
-    //     //         },
-    //     //     },
-    //     // });
-    //     // let b = RsServiceInfoListItem {
-    //     //     m_service_info: RsTlvGenericMapRef {
-    //     //         m_ref_map: pairs,
-    //     //     },
-    //     // };
-    //     // let ser = to_retroshare_wire(&b).expect("failed to serialize");
-    //     // assert_eq!(a, ser);
-
-    //     // let b: RsServiceInfoListItem = from_retroshare_wire(&mut a).expect("failed to deserialize");
-    //     // let c = to_retroshare_wire(&b).expect("failed to serialize");
-    //     // dbg!(a, b, c);
-    //     // assert_eq!(a, b);
-    // }
 }

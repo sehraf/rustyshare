@@ -1,13 +1,13 @@
 // use std::io::{Read, Write};
 use std::sync::Arc;
+// use std::convert::From
 
 // use openssl::ssl::{SslConnector, SslMethod, SslStream};
 // use std::net::{SocketAddr, TcpStream};
-use openssl::{pkey, x509};
+
+use crate::retroshare_compat::ssl_key::SslKey;
 
 // use crate::error::RsError;
-
-pub type SslKeyPair = Arc<(x509::X509, pkey::PKey<openssl::pkey::Private>)>;
 
 // pub struct RsSsl {}
 
@@ -64,7 +64,6 @@ pub type SslKeyPair = Arc<(x509::X509, pkey::PKey<openssl::pkey::Private>)>;
 
 //         // stream.connect().unwrap();
 //         // stream.flush().unwrap();
-        
 
 //         Ok(stream)
 //     }

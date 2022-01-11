@@ -142,7 +142,7 @@ impl Discovery {
                 }
             }
             DISCOVERY_SUB_TYP_IDENTITY_LIST => {
-                let _item: RsDiscIdentityListItem =
+                let _item: DiscIdentityListItem =
                     from_retroshare_wire(&mut packet.payload).expect("failed to deserialize");
                 // println!("received DiscIdentityListItem: {}", item);
             }

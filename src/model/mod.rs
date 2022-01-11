@@ -2,9 +2,11 @@ use std::{
     collections::HashSet,
     net::{SocketAddr, TcpStream},
     sync::{mpsc, Arc},
+    // task::Context,
 };
 
-use openssl::{pkey, x509};
+// use native_tls::Identity;
+// use openssl::{pkey, x509};
 // use sequoia_openpgp as openpgp;
 use retroshare_compat::{basics::*, service_info::RsServiceInfo, tlv::TlvIpAddressInfo};
 
@@ -13,8 +15,11 @@ use peers::{location::Location, Peer};
 
 use crate::{
     parser::Packet,
+    retroshare_compat::ssl_key::SslKey,
     services::*,
-    transport::{connection::PeerConnection, ssl::SslKeyPair, ConnectionType, Transport},
+    transport::{
+        connection::PeerConnection, tcp_openssl::ConTcpOpenssl, ConnectionType, RsPeerConnection,
+    },
     utils::simple_stats::StatsCollection,
 };
 
@@ -51,7 +56,8 @@ pub enum PeerState {
 }
 
 pub struct DataCore {
-    own_key_pair: SslKeyPair,
+    own_key_pair: SslKey,
+    // identity: Identity,
     own_location: PeerId,
     own_location_obj: Arc<Location>, // stored for faster access
 
@@ -83,13 +89,13 @@ pub struct DataCore {
 
 impl DataCore {
     pub fn new(
-        pub_key: x509::X509,
-        priv_key: pkey::PKey<openssl::pkey::Private>,
+        keys: SslKey,
+        // identity: Identity,
         friends: (Vec<Arc<Peer>>, Vec<Arc<Location>>),
         peer_id: &PeerId,
     ) -> DataCore {
         let (tx, rx) = mpsc::channel();
-        let keys = Arc::new((pub_key, priv_key));
+        // let keys = Arc::new((pub_key, priv_key));
 
         // find own locations
         let me = friends
@@ -100,6 +106,7 @@ impl DataCore {
 
         let mut dc = DataCore {
             own_key_pair: keys,
+            // identity,
             own_location: peer_id.clone(),
             own_location_obj: me.clone(),
 
@@ -132,6 +139,7 @@ impl DataCore {
 
         // copy everything
         let keys = self.own_key_pair.to_owned();
+        // let identity = self.identity.to_owned();
         let outer_tx = self.tx.to_owned();
         let (handler_tx, inner_rx) = mpsc::channel();
 
@@ -140,12 +148,12 @@ impl DataCore {
         let mut local: Vec<ConnectionType> = ips
             .0
             .iter()
-            .map(|&val| ConnectionType::Tcp(val.addr.0))
+            .map(|val| ConnectionType::Tcp(val.addr.0))
             .collect();
         let mut external: Vec<ConnectionType> = ips
             .1
             .iter()
-            .map(|&val| ConnectionType::Tcp(val.addr.0))
+            .map(|val| ConnectionType::Tcp(val.addr.0))
             .collect();
         local.append(&mut external);
         let ips = local;
@@ -157,25 +165,44 @@ impl DataCore {
         let loc_key = loc.get_person().upgrade().unwrap().get_pgp().to_owned();
 
         let handler = std::thread::spawn(move || {
-            for ip in ips {
-                if let ConnectionType::Tcp(target) = ip {
-                    let builder = crate::transport::tcp_openssl::Builder::new(&keys);
-                    if let Some(stream) = builder.connect(&target, &loc_key) {
-                        let transport = Transport {
-                            target: ip.to_owned(),
-                            stream,
-                        };
-                        PeerConnection::new(
-                            loc_id.to_owned(),
-                            transport,
-                            inner_rx,
-                            outer_tx.to_owned(),
-                        )
-                        .run();
+            if let Some(mut con) = ConTcpOpenssl::init(&keys, &loc_key) {
+                for ip in ips {
+                    if con.connect(ip) {
+                        PeerConnection::new(loc_id.to_owned(), con, inner_rx, outer_tx.to_owned())
+                            .run();
                         break;
+                    } else {
+                        continue;
                     }
                 }
             }
+
+            // old code
+            // for ip in ips {
+            //     if let ConnectionType::Tcp(target) = ip {
+            //         let builder = crate::transport::tcp_openssl::Builder::new(&keys);
+            //         if let Some(stream) = builder.connect(&target, &loc_key) {
+            //             // if let Ok(stream) = crate::transport::tcp_native_tls::try_connect(
+            //             //     &target,
+            //             //     &loc_key,
+            //             //     &loc_key.keyid().to_hex(),
+            //             //     &identity,
+            //             // ) {
+            //             let transport = Transport {
+            //                 target: ip.to_owned(),
+            //                 stream,
+            //             };
+            //             PeerConnection::new(
+            //                 loc_id.to_owned(),
+            //                 transport,
+            //                 inner_rx,
+            //                 outer_tx.to_owned(),
+            //             )
+            //             .run();
+            //             break;
+            //         }
+            //     }
+            // }
 
             // failed to connect or exited
             // TODO handle connection close (peer went offline) better
@@ -241,16 +268,20 @@ impl DataCore {
                                     if let Some(pos) =
                                         self.bootup.iter().position(|val| &val.0 == loc)
                                     {
-                                        // println!("failed to connect location {}", &loc); // quite noisy
-                                        let _ = self.bootup.remove(pos);
+                                        // println!("[core] failed to connect location {}", &loc); // quite noisy
+                                        self.bootup.remove(pos);
                                     } else if let Some(pos) =
                                         self.worker.iter().position(|val| &val.0 == loc)
                                     {
                                         println!("[core] shutting down location {}", &loc);
-                                        let _ = self.worker.remove(pos);
+                                        self.worker.remove(pos);
                                     } else {
-                                        println!("[core] unable to find {} in both worker lists!", loc);
-                                        unimplemented!();
+                                        println!(
+                                            "[core] unable to find {} in both worker lists!",
+                                            loc
+                                        );
+                                        // this is send twice some times, ignore for now.
+                                        // unimplemented!();
                                     }
                                 }
                             }
@@ -262,40 +293,38 @@ impl DataCore {
                                 .find(|&loc| loc.get_location_id() == ssl_id);
                             if peer.is_none() {
                                 println!("[core] got an update for an unknown location!");
-                                println!(" - ssl_id: {}", ssl_id);
-                                println!("our known locations:");
-                                self.locations.iter().for_each(|loc| {
-                                    println!(" - {} {}", loc.get_location_id(), loc.get_name())
-                                });
+                                // println!(" - ssl_id: {}", ssl_id);
+                                // println!("our known locations:");
+                                // self.locations.iter().for_each(|loc| {
+                                //     println!(" - {} {}", loc.get_location_id(), loc.get_name())
+                                // });
                             } else {
                                 let peer = peer.unwrap();
                                 let mut ip_addresses = peer.get_ips_rw();
 
                                 for ip in local {
-                                    if ip_addresses.0.insert(ip.to_owned()) {
-                                        println!(
-                                            "[core] updating local ip {} of peer {} {}",
-                                            ip,
-                                            peer.get_person()
-                                                .upgrade()
-                                                .expect("location is missing it's identity!")
-                                                .get_name(),
-                                            peer.get_name()
-                                        );
-                                    }
+                                    ip_addresses.0.insert(ip.to_owned());
+                                    println!(
+                                        "[core] updating local ip {} of peer {} {}",
+                                        ip,
+                                        peer.get_person()
+                                            .upgrade()
+                                            .expect("location is missing it's identity!")
+                                            .get_name(),
+                                        peer.get_name()
+                                    );
                                 }
                                 for ip in external {
-                                    if ip_addresses.0.insert(ip.to_owned()) {
-                                        println!(
-                                            "[core] updating external ip {} of peer {} {}",
-                                            ip,
-                                            peer.get_person()
-                                                .upgrade()
-                                                .expect("location is missing it's identity!")
-                                                .get_name(),
-                                            peer.get_name()
-                                        );
-                                    }
+                                    ip_addresses.0.insert(ip.to_owned());
+                                    println!(
+                                        "[core] updating external ip {} of peer {} {}",
+                                        ip,
+                                        peer.get_person()
+                                            .upgrade()
+                                            .expect("location is missing it's identity!")
+                                            .get_name(),
+                                        peer.get_name()
+                                    );
                                 }
                             }
                         }
@@ -309,24 +338,31 @@ impl DataCore {
                 }
 
                 PeerCommand::Thread(PeerThreadCommand::Incoming(con)) => {
-                    let addr = con.peer_addr().unwrap();
+                    let _ = con.peer_addr().unwrap();
 
-                    let builder = crate::transport::tcp_openssl::Builder::new(&self.own_key_pair);
-                    if let Some(stream) = builder.incoming(con) {
-                        let outer_tx = self.tx.clone();
-                        let (handle_tx, inner_rx) = mpsc::channel();
-                        let loc_id = PeerId::default(); // TODO
+                    // let builder = crate::transport::tcp_openssl::Builder::new(&self.own_key_pair);
+                    // if let Some(stream) = builder.incoming(con) {
+                    //     // if let Ok(stream) =
+                    //     // crate::transport::tcp_native_tls::try_accept(con, &self.identity)
+                    //     // {
+                    //     let outer_tx = self.tx.clone();
+                    //     let (handle_tx, inner_rx) = mpsc::channel();
+                    //     let loc_id = PeerId::default(); // TODO
+                    //                                     // let loc_id =stream.peer_certificate().unwrap().unwrap().
 
-                        let handle = std::thread::spawn(move || {
-                            let transport = Transport {
-                                target: ConnectionType::Tcp(addr),
-                                stream,
-                            };
-                            PeerConnection::new(loc_id, transport, inner_rx, outer_tx).run();
-                        });
+                    //     let handle = std::thread::spawn(move || {
+                    //         let transport = Transport {
+                    //             target: ConnectionType::Tcp(addr),
+                    //             stream,
+                    //         };
+                    //         PeerConnection::new(loc_id, transport, inner_rx, outer_tx).run();
+                    //     });
 
-                        self.worker.push((loc_id, handle_tx, handle));
-                    }
+                    //     self.worker.push((loc_id, handle_tx, handle));
+                    // }
+                    // if
+                    // TODO
+                    unimplemented!();
                 }
                 PeerCommand::Send(packet) => {
                     self.try_send_to_peer(packet);

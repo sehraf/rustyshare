@@ -22,64 +22,44 @@ mod transport;
 mod utils;
 
 use ::retroshare_compat::keyring::Keyring;
+// use error::RsError;
 use io::Write;
 use model::{PeerCommand, PeerThreadCommand};
+// use native_tls::Certificate;
 use openpgp::Cert;
 use openssl::x509::X509;
 use sequoia_openpgp as openpgp;
 use serial_stuff::load_peers;
 
-// fn to_string(cert: &Option<&openpgp::Cert>) -> String {
-//     let s: String = match cert {
-//         None => String::from("nothing"),
-//         Some(v) => {
-//             let mut s2: String = String::new();
-//             for ua in v.userids() {
-//                 // let s3: String = match ua.name() {
-//                 //     Ok(v) => v.unwrap(),
-//                 //     Err(_) => String::from("nothing, failed to get name"),
-//                 // };
-//                 if ua.name().is_err() {
-//                     println!("no name");
-//                 }
-//                 if ua.comment().is_err() {
-//                     println!("no comment");
-//                 }
-//                 if ua.email().is_err() {
-//                     println!("no email");
-//                 }
-//                 if ua.uri().is_err() {
-//                     println!("no uri");
-//                 }
-//                 let s3 = String::from_utf8_lossy(ua.value());
-//                 s2.push_str(&s3);
-//             }
-//             {
-//                 let x: &openpgp::Cert = &v;
-//                 println!("{}'s has {} keys.", x.fingerprint(), x.keys().count());
-//             }
-//             s2.clone()
-//         }
-//     };
-//     s
-// }
-
+#[allow(unused_braces)]
 fn read_location_cert(path: &Path) -> Result<X509, io::Error> {
+    // fn read_location_cert(path: &Path) -> Result<Certificate, RsError> {
     let full_path = path.join("keys/user_cert.pem");
     let mut file = File::open(full_path)?;
 
     let mut user_cert = Vec::new();
     file.read_to_end(&mut user_cert)?;
 
-    return Ok(openssl::x509::X509::from_pem(&user_cert)?);
+    // return Ok(openssl::x509::X509::from_pem(&user_cert)?);
+    // return Ok(Certificate::from_pem(&user_cert)?);
+    Ok(
+        openssl::x509::X509::from_pem(&user_cert)?, // , Certificate::from_pem(&user_cert).unwrap(),
+    )
 }
 
+#[allow(unused_braces)]
 fn select_location(base_dir: &Path, keys: &Keyring) -> Option<(String, X509, Cert)> {
+    // fn select_location(base_dir: &Path, keys: &Keyring) -> Option<(String, Certificate, Cert)> {
     const LOC_FOLDER_PREFIX: &str = "LOC06_";
     const LOC_FOLDER_PREFIX_HIDDEN: &str = "HID06_";
 
     // build list with valid options
-    let mut locations: Vec<(String, X509, Cert)> = vec![];
+    let mut locations: Vec<(
+        String,
+        X509, // , Certificate
+        Cert,
+    )> = vec![];
+    // let mut locations: Vec<(String, Certificate, Cert)> = vec![];
     for dir in std::fs::read_dir(base_dir).expect("failed to list folder") {
         // get folder (name)
         let dir = dir.unwrap();
@@ -104,7 +84,9 @@ fn select_location(base_dir: &Path, keys: &Keyring) -> Option<(String, X509, Cer
         // find priv key
         let key = keys.get_key_by_id_str(
             &String::from_utf8_lossy(
-                cert.issuer_name()
+                cert
+                    // .0
+                    .issuer_name()
                     .entries()
                     .into_iter()
                     .next()
@@ -158,15 +140,13 @@ fn select_location(base_dir: &Path, keys: &Keyring) -> Option<(String, X509, Cer
 }
 
 fn main() {
-    let rs_base_dir = dirs::home_dir()
-        .expect("can't find home directory")
-        .join(".retroshare");
+    let rs_base_dir = retroshare_compat::get_base_dir();
 
     // load keyring
     let mut keys = Keyring::new();
     keys.parse(&rs_base_dir);
 
-    let (loc, localtion_path, key) = loop {
+    let (loc, localtion_path, ssl_key) = loop {
         // pick location
         let loc = select_location(&rs_base_dir, &keys).expect("no location selected");
         let localtion_path = rs_base_dir.join(&loc.0);
@@ -175,13 +155,18 @@ fn main() {
         let mut password = rpassword::prompt_password_stdout("Password: ").unwrap();
 
         // unlock key ...
-        if let Ok(key) = retroshare_compat::ssl_key::SslKey::new().load_encrypted(
+        match retroshare_compat::ssl_key::SslKey::new().load_encrypted(
             &loc.2,
             &localtion_path,
             &password,
         ) {
-            password.clear();
-            break (loc, localtion_path, key);
+            Ok(key) => {
+                password.clear();
+                break (loc, localtion_path, key);
+            }
+            Err(why) => {
+                println!("{}", why);
+            }
         }
         password.clear();
 
@@ -192,7 +177,7 @@ fn main() {
     // ... load general config ...
     let general_cfg = retroshare_compat::config_store::decryp_file(
         &localtion_path.join("config/general.cfg"),
-        &key.1,
+        ssl_key.to_owned(),
     )
     .expect("failed to load peers.cfg");
     serial_stuff::parse_general_cfg(&general_cfg);
@@ -200,7 +185,7 @@ fn main() {
     // ... and load location ...
     let mut peers_cfg = retroshare_compat::config_store::decryp_file(
         &localtion_path.join("config/peers.cfg"),
-        &key.1,
+        ssl_key.to_owned(),
     )
     .expect("failed to load peers.cfg");
 
@@ -213,7 +198,7 @@ fn main() {
     let peer_id = PeerId(peer_id);
 
     // init data core
-    let mut core = model::DataCore::new(key.0, key.1, friends, &peer_id);
+    let mut core = model::DataCore::new(ssl_key, friends, &peer_id);
     let own_ips = core.get_own_location().get_ips().0.clone(); // TODO
 
     // setup listener
@@ -229,22 +214,22 @@ fn main() {
         .addr
         .0
         .port();
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port); // 9926
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
     let (listener_tx, listener_rx) = mpsc::channel();
     let listener = transport::listener::Listener::new(addr, core.get_tx(), listener_rx).unwrap();
 
     let mut stats: utils::simple_stats::StatsCollection = (Instant::now(), HashMap::new());
 
-    // tick forever
-
-    // stats counter
-    let mut counter = 0;
-    const MAX_COUNTER: u32 = 80;
-
     // sleep time
     let mut now: Instant;
     const TARGET_INTERVAL: Duration = Duration::from_millis(25);
 
+    // stats counter
+    let mut counter = 0;
+    const INTERVAL: Duration = Duration::from_secs(2); // every 2 seconds
+    const MAX_COUNTER: u32 = (INTERVAL.as_micros() / TARGET_INTERVAL.as_micros()) as u32;
+
+    // tick forever
     while core.tick(&mut stats) {
         now = Instant::now();
 

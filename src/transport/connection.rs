@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    // io::{Read, Write},
     sync::mpsc,
     thread,
     time::{Duration, Instant},
@@ -16,13 +17,16 @@ use crate::{
     },
     serial_stuff,
     services::{service_info, HandlePacketResult, Services},
-    transport::Transport,
+    transport::RsPeerConnection,
     utils::simple_stats::StatsCollection,
 };
 
-pub struct PeerConnection {
+pub struct PeerConnection<T>
+where
+    T: RsPeerConnection,
+{
     location_id: PeerId,
-    transport: Transport,
+    transport: Box<T>,
 
     parser: Parser,
     services: Services,
@@ -31,15 +35,17 @@ pub struct PeerConnection {
     outer_tx: mpsc::Sender<PeerCommand>,
 }
 
-impl PeerConnection {
+impl<T> PeerConnection<T>
+where
+    T: RsPeerConnection,
+{
     pub fn new(
         location_id: PeerId,
-        transport: Transport,
+        transport: Box<T>,
 
         rx: mpsc::Receiver<PeerCommand>,
         tx: mpsc::Sender<PeerCommand>,
-    ) -> PeerConnection {
-
+    ) -> PeerConnection<T> {
         let services = Services::get_peer_services();
 
         PeerConnection {
@@ -60,12 +66,7 @@ impl PeerConnection {
 
         let mut read = 0;
         while read < len {
-
-            match self
-                .transport
-                .stream
-                .ssl_read(&mut buf[read..])
-            {
+            match self.transport.read(&mut buf[read..]) {
                 Ok(length) => {
                     // println!("got {:?} bytes: {:X?}", length, &buf);
                     read += length;
@@ -80,13 +81,17 @@ impl PeerConnection {
 
     pub fn read_packet(&mut self) -> Result<(Header, Vec<u8>), RsError> {
         let mut header: [u8; HEADER_SIZE] = [0; HEADER_SIZE]; // type + size
-        match self.transport.stream.ssl_read(&mut header) {
+        match self.transport.read(&mut header) {
             Ok(0) => {
                 println!("[peer] zero read");
             }
             Ok(length) => {
                 assert_eq!(&length, &8);
                 // println!("got header {} bytes {:02X?}", &length, &header);
+
+                // match self.transport.stream.read_exact(&mut header) {
+                // Ok(()) => {
+                // println!("got header {:02X?}", &header);
 
                 // parse header
                 let header = match Header::try_parse(header) {
@@ -100,29 +105,42 @@ impl PeerConnection {
                 let payload_size = header.get_payload_size();
 
                 // println!("reading {} bytes payload", payload_size);
+
                 let buf = self.read_data(payload_size);
                 assert_eq!(payload_size, buf.len());
+
+                // let mut buf: Vec<u8> = vec![];
+                // buf.resize(payload_size, 0);
+                // self.transport.stream.read_exact(buf.as_mut_slice())?;
+
                 return Ok((header, buf));
             }
-            Err(why) if openssl::ssl::ErrorCode::WANT_READ == why.code() => {}
-            Err(why) if openssl::ssl::ErrorCode::from_raw(6) == why.code() => {
-                // "the SSL session has been shut down"
+            // Err(why) if openssl::ssl::ErrorCode::WANT_READ == why.code() => {}
+            // Err(why) if openssl::ssl::ErrorCode::from_raw(6) == why.code() => {
+            //     // "the SSL session has been shut down"
+            //     return Err(why.into());
+            // }
+            // Err(why)
+            //     if openssl::ssl::ErrorCode::SYSCALL == why.code() && why.io_error().is_none() =>
+            // {
+            //     // EOF error, socket is probaly dead
+            //     return Err(why.into());
+            // }
+            Err(why) if why.kind() == std::io::ErrorKind::ConnectionReset => {
                 return Err(why.into());
             }
-            Err(why)
-                if openssl::ssl::ErrorCode::SYSCALL == why.code() && why.io_error().is_none() =>
-            {
-                // EOF error, socket is probaly dead
-                return Err(why.into());
-            }
-            Err(why) => println!("[peer] failed to read header: {}", why),
+            Err(why) if why.kind() == std::io::ErrorKind::WouldBlock => {}
+
+            // TODO better handle errors
+            Err(why) => println!("[peer] failed to read header: {:?}", why),
         }
         Err(RsError::Generic)
     }
 
     fn write(&mut self, data: &Vec<u8>) {
         // println!("writing: {:02X?}", &data);
-        match self.transport.stream.ssl_write(data) {
+        match self.transport.write(data) {
+            // match self.transport.stream.write_all(data) {
             Ok(_) => {}
             Err(why) => println!("[peer] failed to write: {:?}", why),
         }
@@ -180,7 +198,7 @@ impl PeerConnection {
 
         loop {
             now = Instant::now();
-            
+
             // handle communication (incoming)
             while let Ok(msg) = match self.inner_rx.try_recv() {
                 // received a command
@@ -269,30 +287,31 @@ impl PeerConnection {
                 continue;
             }
             let sleep_duration = TARGET_INTERVAL - loop_duration;
-            // println!("main loop execution took {}us sleeping for {}us", &loop_duration.as_millis(), &sleep_duration.as_millis());
+            // println!("[peer] main loop execution took {}us sleeping for {}us", &loop_duration.as_millis(), &sleep_duration.as_millis());
             thread::sleep(sleep_duration);
         }
 
-        // TODO this is currently sent twice. One time here and another time in datacore::connect
-        // // good bye
-        // self.outer_tx
-        //     .send(PeerCommand::PeerUpdate(PeerStatus::Offline(
-        //         self.location_id.clone(),
-        //     )))
-        //     .unwrap();
+        // good bye
+        self.outer_tx
+            .send(PeerCommand::PeerUpdate(PeerUpdate::Status(
+                PeerState::NotConnected(self.location_id.clone()),
+            )))
+            .expect("failed to communicate with core");
     }
 
     pub fn run(&mut self) {
         // notify core about a successfull connection
-        if let super::ConnectionType::Tcp(ip) = self.transport.target {
-            self.outer_tx
-                .send(PeerCommand::PeerUpdate(PeerUpdate::Status(
-                    PeerState::Connected(self.location_id, ip),
-                )))
-                .expect("failed to communicate with core");
-            self.run_loop();
-        } else {
-            unimplemented!("unable to get TCP connection infos");
+        match self.transport.target() {
+            super::ConnectionType::Tcp(ip) | super::ConnectionType::Udp(ip) => {
+                self.outer_tx
+                    .send(PeerCommand::PeerUpdate(PeerUpdate::Status(
+                        PeerState::Connected(self.location_id, ip),
+                    )))
+                    .expect("failed to communicate with core");
+                self.run_loop();
+            },
+            #[allow(unreachable_patterns)]
+            _ => unimplemented!("unable to get TCP connection infos"),
         }
     }
 }

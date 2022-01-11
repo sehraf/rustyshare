@@ -1,4 +1,6 @@
-// use openssl::rsa::Rsa;
+use std::io::{self, Read, Write};
+use std::path;
+use std::{fs::File, sync::Arc};
 
 use openpgp::{
     cert::prelude::*,
@@ -7,41 +9,68 @@ use openpgp::{
     policy::{Policy, StandardPolicy as P},
     types::SymmetricAlgorithm,
 };
+use openssl::{
+    pkey::{self, PKey},
+    x509::X509,
+};
+use rustls::{Certificate, PrivateKey};
 use sequoia_openpgp as openpgp;
-// use openpgp::serialize::stream::*;
 
-// use rustls;
-
-// use pem;
-use openssl::pkey::PKey;
-
-// use std::fs;
-use std::fs::File;
-use std::io::{self, Read, Write};
-use std::path;
-
+/// Simple type wrapper for DER encoded public key
+pub type PublicKeyDer = Vec<u8>;
+/// Simple type wrapper for DER encoded private key
+pub type PrivateKeyDer = Vec<u8>;
+/// Key pair container
+#[derive(Clone)]
 pub struct SslKey {
-    // password: String,
-    public_key: Vec<u8>,
-    private_key: Vec<u8>,
+    keys: Arc<Box<(PublicKeyDer, PrivateKeyDer)>>,
 }
 
 impl SslKey {
     pub fn new() -> SslKey {
         SslKey {
-            // password: String::new(),
-            public_key: Vec::new(),
-            private_key: Vec::new(),
+            keys: Arc::new(Box::new((Vec::new(), Vec::new()))),
         }
     }
 
-    #[allow(dead_code)]
-    pub fn public_key(&self) -> &Vec<u8> {
-        &self.public_key
+    pub fn public_key(&self) -> &PublicKeyDer {
+        &self.keys.0
     }
-    #[allow(dead_code)]
-    pub fn private_key(&self) -> &Vec<u8> {
-        &self.private_key
+
+    pub fn private_key(&self) -> &PrivateKeyDer {
+        &self.keys.1
+    }
+}
+
+impl From<SslKey> for X509 {
+    fn from(key: SslKey) -> Self {
+        X509::from_der(&key.public_key()).unwrap()
+    }
+}
+
+impl From<SslKey> for PKey<pkey::Private> {
+    fn from(key: SslKey) -> Self {
+        PKey::private_key_from_der(&key.private_key()).unwrap()
+    }
+}
+
+impl From<SslKey> for Certificate {
+    fn from(key: SslKey) -> Self {
+        Certificate(key.public_key().to_owned())
+    }
+}
+
+impl From<SslKey> for PrivateKey {
+    fn from(key: SslKey) -> Self {
+        PrivateKey(key.private_key().to_owned())
+    }
+}
+
+impl From<(PublicKeyDer, PrivateKeyDer)> for SslKey {
+    fn from(from: (PublicKeyDer, PrivateKeyDer)) -> Self {
+        SslKey {
+            keys: Arc::new(Box::new((from.0, from.1))),
+        }
     }
 }
 
@@ -51,10 +80,21 @@ impl SslKey {
         pgp: &Cert,
         localtion_path: &path::Path,
         pw: &str,
-    ) -> Result<(openssl::x509::X509, PKey<openssl::pkey::Private>), std::io::Error> {
+    ) -> Result<SslKey, std::io::Error> {
         // decrypt (ssl)key passphrase
         let full_path = localtion_path.join("keys/");
         let password = SslKey::decrypt_passphrase(&full_path, pgp, pw)?;
+
+        // print ssl password for debug only!
+        // println!("{}", String::from_utf8_lossy(&password));
+
+        // sounds a bit stupid, RS won't generate such passphrases!
+        assert!(
+            !password.contains(&0),
+            "your SSL passphrase contains \0 this is currently a problem!"
+        );
+
+        // OpenSSL stuff
 
         // user_cert.pem
         let mut user_cert_file = File::open(&full_path.join("user_cert.pem"))?;
@@ -66,10 +106,33 @@ impl SslKey {
         let mut user_pk = Vec::new();
         user_pk_file.read_to_end(&mut user_pk)?;
 
-        let user_cert = openssl::x509::X509::from_pem(&user_cert)?;
-        let user_pk = PKey::private_key_from_pem_passphrase(&user_pk, password.as_ref()).unwrap();
+        // convert PEM to DER
+        // XXX: replace openssl
+        let user_cert_open = openssl::x509::X509::from_pem(&user_cert)?;
+        let user_cert = user_cert_open.to_der()?;
+        let user_pk_open = PKey::private_key_from_pem_passphrase(&user_pk, password.as_ref())
+            .expect("failed to decrypt private key!");
+        let user_pk = user_pk_open.private_key_to_der()?;
+        // // native-tls stuff
+        // let mut identity_file = File::open(&full_path.join("identity.pfx"))?;
+        // let mut identity = Vec::new();
+        // identity_file.read_to_end(&mut identity)?;
 
-        Ok((user_cert, user_pk))
+        // let identity = Identity::from_pkcs12(&identity, &"phpkid").unwrap();
+
+        // let user_pk = PKey::private_key_from_pem_callback(&user_pk, |pw_buffer| {
+        //     assert!(password.len() <= pw_buffer.len(), "not enough space!");
+        //     pw_buffer[0..password.len()].copy_from_slice(password.as_slice());
+        //     Ok(password.len())
+        // })
+        // .expect("failed to decrypt private key!");
+
+        Ok((user_cert, user_pk).into())
+
+        // Ok((
+        //     user_cert_open,
+        //     user_pk_open, // , identity
+        // ))
     }
 
     fn decrypt_passphrase(

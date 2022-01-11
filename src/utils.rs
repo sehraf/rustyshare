@@ -35,11 +35,11 @@ pub mod units {
 
         let units: Vec<String> = vec![
             String::from("B"),
-            String::from("Kb"),
-            String::from("Mb"),
-            String::from("Gb"),
-            String::from("Tb"),
-            String::from("Pb"),
+            String::from("kB"),
+            String::from("mB"),
+            String::from("gB"),
+            String::from("tB"),
+            String::from("pB"),
         ];
 
         while b > 1024.0 && unit_index < units.len() {

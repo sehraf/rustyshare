@@ -51,7 +51,7 @@ const ENTRY_A_FN: StatsPrinter = |data| -> String { format!("{} times", data) };
 
 const ENTRY_B: &str = &"data_forwarded";
 const ENTRY_B_FN: StatsPrinter =
-    |data| -> String { format!("{}/s", pretty_print_bytes(data as u64)) };
+    |data| -> String { format!("{}", pretty_print_bytes(data as u64)) };
 
 pub struct Turtle {
     core: mpsc::Sender<PeerCommand>,
@@ -141,9 +141,8 @@ impl Turtle {
         // RS does a lot of math to be "safe", this has been disscussed often in the past
 
         // create a copy for simple replay
-        let mut packet_copy = packet.clone();
         let item: TurtleOpenTunnelItem =
-            from_retroshare_wire(&mut packet.payload).expect("failed to deserialze");
+            from_retroshare_wire(&mut packet.payload.clone()).expect("failed to deserialze");
 
         // println!("[Turtle] received open tunnel request: {}", &item);
 
@@ -158,23 +157,7 @@ impl Turtle {
             return HandlePacketResult::Handled(None);
         }
 
-        // Here be dragons!
-        //
-        // Goal: tunnel should usually not exceed 6 hops
-        // Idea:
-        // - drop probability: x
-        // - (1-x)^6 <= (1-0.9) drop probability after 6 hop >= 90%
-        // - x ~ 0.33 results in about 9% chance of a tunnel being longer than 6 hops
-        //
-        // DO NOT CARE ABOUT THE (stupid) HOPS COUNTER
-        // I know that RS took some effort to not leak anything but i personally believe that this (and basically everything else) introduces leakage to some extend.
-        let forward = self
-            .rng
-            .write()
-            .expect("failed to get rng, lock poisoned!")
-            .gen_ratio(66, 100);
-
-        if !forward {
+        if !self.forward() {
             // println!("[Turtle] dropping tunnel request! {}", item);
             return HandlePacketResult::Handled(None);
         }
@@ -197,9 +180,9 @@ impl Turtle {
                     continue;
                 }
 
-                packet_copy.peer_id = loc.get_location_id().to_owned();
+                packet.peer_id = loc.get_location_id().to_owned();
                 self.core
-                    .send(PeerCommand::Send(packet_copy.clone()))
+                    .send(PeerCommand::Send(packet.clone()))
                     .expect("failed to communicate with core!");
             }
         }
@@ -210,9 +193,8 @@ impl Turtle {
 
     fn handle_tunnel_ok(&self, mut packet: Packet) -> HandlePacketResult {
         // create a copy for simple forward
-        let mut packet_copy = packet.clone();
         let item: TurtleTunnelOkItem =
-            from_retroshare_wire(&mut packet.payload).expect("failed to deserialze");
+            from_retroshare_wire(&mut packet.payload.clone()).expect("failed to deserialze");
 
         // println!("[Turtle] received tunnel ok: {}", &item);
 
@@ -260,16 +242,15 @@ impl Turtle {
         // println!("[Turtle] forwarding {:08x}", &item.tunnel_id);
 
         // send reponse
-        packet_copy.peer_id = request.from;
+        packet.peer_id = request.from;
 
-        HandlePacketResult::Handled(Some(packet_copy))
+        HandlePacketResult::Handled(Some(packet))
     }
 
     fn handle_generic_data(&self, mut packet: Packet) -> HandlePacketResult {
         // create a copy for simple forward
-        let mut packet_copy = packet.clone();
         let item: TurtleGenericDataItem =
-            from_retroshare_wire(&mut packet.payload).expect("failed to deserialze");
+            from_retroshare_wire(&mut packet.payload.clone()).expect("failed to deserialze");
 
         // println!("received generic data: {}", &item);
 
@@ -290,9 +271,9 @@ impl Turtle {
 
         // found it, figure out direction
         if packet.peer_id == entry.from {
-            packet_copy.peer_id = entry.to;
+            packet.peer_id = entry.to;
         } else if packet.peer_id == entry.to {
-            packet_copy.peer_id = entry.from;
+            packet.peer_id = entry.from;
         } else {
             println!(
                 "[Turtle] generic data item has active tunnel {:08x} but no matching source / destination! Dropping tunnel!",
@@ -320,7 +301,24 @@ impl Turtle {
             .expect("failed to get stats_forwarded_data, lock poisened!") +=
             packet.header.get_payload_size() as i32;
 
-        return HandlePacketResult::Handled(Some(packet_copy));
+        return HandlePacketResult::Handled(Some(packet));
+    }
+
+    fn forward(&self) -> bool {
+        // Here be dragons!
+        //
+        // Goal: tunnel should usually not exceed 6 hops
+        // Idea:
+        // - drop probability: x
+        // - (1-x)^6 <= (1-0.9) drop probability after 6 hop >= 90%
+        // - x ~ 0.33 results in about 9% chance of a tunnel being longer than 6 hops
+        //
+        // DO NOT CARE ABOUT THE (stupid) HOPS COUNTER
+        // I know that RS took some effort to not leak anything but i personally believe that this (and basically everything else) introduces leakage to some extend.
+        self.rng
+            .write()
+            .expect("failed to get rng, lock poisoned!")
+            .gen_ratio(66, 100)
     }
 }
 

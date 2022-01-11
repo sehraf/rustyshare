@@ -1,4 +1,3 @@
-use ::serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     fmt,
@@ -15,12 +14,9 @@ use crate::{
 
 // pub mod serde;
 // pub mod typed_string;
+// pub mod macros;
 
 pub const TLV_HEADER_SIZE: usize = 6;
-
-// pub trait RsTagged {
-//     fn get_tag(&self) -> u16;
-// }
 
 // typedef t_RsTlvIdSet<RsPeerId,      TLV_TYPE_PEERSET>	        RsTlvPeerIdSet ;
 // typedef t_RsTlvIdSet<RsPgpId,       TLV_TYPE_PGPIDSET>	        RsTlvPgpIdSet ;
@@ -29,7 +25,6 @@ pub const TLV_HEADER_SIZE: usize = 6;
 // typedef t_RsTlvIdSet<RsGxsMessageId,TLV_TYPE_GXSMSGIDSET>       RsTlvGxsMsgIdSet ;
 // typedef t_RsTlvIdSet<RsGxsCircleId, TLV_TYPE_GXSCIRCLEIDSET>    RsTlvGxsCircleIdSet ;
 // typedef t_RsTlvIdSet<RsNodeGroupId, TLV_TYPE_NODEGROUPIDSET>    RsTlvNodeGroupIdSet ;
-
 const TLV_TYPE_PEERSET: u16 = 0x1021;
 const TLV_TYPE_HASHSET: u16 = 0x1022;
 const TLV_TYPE_PGPIDSET: u16 = 0x1023;
@@ -104,6 +99,8 @@ make_tlv_id_set_type!(TlvGxsMsgIdSet, GxsMessageId, TLV_TYPE_GXSMSGIDSET);
 make_tlv_id_set_type!(TlvGxsCircleIdSet, GxsCircleId, TLV_TYPE_GXSCIRCLEIDSET);
 make_tlv_id_set_type!(TlvNodeGroupIdSet, NodeGroupId, TLV_TYPE_NODEGROUPIDSET);
 
+// typed string
+
 pub fn read_string_typed(data: &mut Vec<u8>, tag: u16) -> String {
     let t = read_u16(data); // type
     let s = read_u32(data); // len
@@ -118,7 +115,71 @@ pub fn write_string_typed(data: &mut Vec<u8>, val: &str, tag: u16) {
     data.extend_from_slice(val.as_bytes());
 }
 
-// TODO handle this Option situation better.
+// pub struct TypedString {
+//     str: String,
+//     tag: u16,
+// }
+
+// impl TypedString {
+//     pub fn new(s: &str, tag: u16) -> TypedString {
+//         TypedString {
+//             str: s.to_owned(),
+//             tag,
+//         }
+//     }
+// }
+
+// impl Serialize for TypedString {
+//     // fn serialize<S: ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+//     //     use ser::SerializeTuple;
+
+//     //     // let mut seq = serializer.serialize_tuple(SIGNATURE_LENGTH)?;
+
+//     //     // for byte in &self.0[..] {
+//     //     //     seq.serialize_element(byte)?;
+//     //     // }
+
+//     //     // seq.end()
+//     //     serializer.
+//     // }
+//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+//     where
+//         S: serde::Serializer,
+//     {
+//         serializer.serialize_u16(self.tag)?;
+//         // len is part of the following
+//         serializer.serialize_str(self.str)y
+//     }
+// }
+
+// impl<'de> Deserialize<'de> for TypedString {
+//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+//     where
+//         D: serde::Deserializer<'de>,
+//     {
+//         struct Vis {};
+
+//         impl Visitor<'de> for Vis {
+//             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+//                 formatter.write_str("tlv encoded string")
+//             }
+
+//             fn visit_u16<E>(self, v: u16) -> Result<Self::Value, E>
+//             where
+//                     E: serde::de::Error, {
+//                 Ok(v)
+//             }
+
+//             // fn visit_b
+//         }
+
+//         deserializer.deserialize_u16(Vis).and_then(|tag| assert_eq!(tag, self.tag))?;
+//         deserializer.deserialize_bytes(Vis)
+//     }
+// }
+
+// tlv ip addr
+
 pub fn read_tlv_ip_addr(data: &mut Vec<u8>) -> SocketAddr {
     let tag = read_u16(data); // type
     let len = read_u32(data); // len
@@ -180,62 +241,8 @@ pub fn write_tlv_ip_addr(data: &mut Vec<u8>, addr: &SocketAddr) {
     }
 }
 
-// pub fn read_tlv_ip_addr_v4(data: &mut Vec<u8>) -> Option<SocketAddr> {
-//     let t = read_u16(data); // type
-//     let s = read_u32(data); // len
-//     assert_eq!(t, 0x1072); // const uint16_t TLV_TYPE_ADDRESS       = 0x1072;
-//     return match s {
-//         6 => {
-//             // consume rest!
-//             assert_eq!(read_u16(data), 0x0085); // type, const uint16_t TLV_TYPE_IPV4          = 0x0085;
-//             assert_eq!(read_u32(data), 0); // len
-//             None
-//         }
-//         // current header (6) + coming header (6) + ipv4 (4) + port(2)
-//         18 => {
-//             assert_eq!(read_u16(data), 0x0085); // type, const uint16_t TLV_TYPE_IPV4          = 0x0085;
-//             assert_eq!(read_u32(data), 12); // len
-//             let addr_loc_v4 = {
-//                 let ip = read_u32(data).swap_bytes(); // why?!
-//                 let port = read_u16(data).swap_bytes();
-//                 SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip)), port)
-//             };
-//             Some(addr_loc_v4)
-//         }
-//         m => panic!("unkown ipv4 size {:?}", m),
-//     };
-// }
-
-// pub fn read_tlv_ip_addr_v6(data: &mut Vec<u8>) -> Option<SocketAddr> {
-//     let t = read_u16(data); // type
-//     let s = read_u32(data); // len
-//     assert_eq!(t, 0x1072); // const uint16_t TLV_TYPE_ADDRESS       = 0x1072;
-//     return match s {
-//         6 => {
-//             // consume rest!
-//             assert_eq!(read_u16(data), 0x0085); // type, const uint16_t TLV_TYPE_IPV4          = 0x0085;
-//             assert_eq!(read_u32(data), 0); // len
-//             None
-//         }
-//         // current header (6) + coming header (6) + ipv4 (16) + port(2)
-//         30 => {
-//             assert_eq!(read_u16(data), 0x0086); // type, const uint16_t TLV_TYPE_IPV6          = 0x0086;
-//             assert_eq!(read_u32(data), 24); // len
-//             let mut ip: u128 = 0;
-//             for _ in 0..4 {
-//                 ip = ip.overflowing_shl(32).0;
-//                 ip += read_u32(data) as u128;
-//             }
-//             let port = read_u16(data).swap_bytes(); // why?!
-//             let ip = SocketAddr::new(IpAddr::V6(Ipv6Addr::from(ip)), port);
-//             Some(ip)
-//         }
-//         m => panic!("unkown ipv6 size {:?}", m),
-//     };
-// }
-
-// #[derive(Debug)]
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone)]
+// #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct TlvIpAddress(pub SocketAddr);
 
 impl Default for TlvIpAddress {
@@ -268,7 +275,7 @@ impl fmt::Display for TlvIpAddress {
 // 	uint64_t  seenTime;				// Mandatory :
 // 	uint32_t  source; 				// Mandatory :
 // };
-#[derive(Debug, PartialEq, Eq, Default, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Default, Clone)]
 pub struct TlvIpAddressInfo {
     pub addr: TlvIpAddress,
     pub seen_time: u64,

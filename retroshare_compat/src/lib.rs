@@ -11,7 +11,7 @@ pub mod keyring;
 pub mod service_info;
 pub mod turtle;
 
-#[macro_use]
+// #[macro_use]
 macro_rules! gen_writer {
     ($name:ident, $type:ty, $byte_width:expr) => {
         pub fn $name(data: &mut Vec<u8>, val: $type) {
@@ -27,7 +27,7 @@ gen_writer!(write_u16, u16, 2);
 gen_writer!(write_u32, u32, 4);
 gen_writer!(write_u64, u64, 8);
 
-#[macro_use]
+// #[macro_use]
 macro_rules! gen_reader {
     ($name:ident, $type:ty, $byte_width:expr) => {
         pub fn $name(data: &mut Vec<u8>) -> $type {
