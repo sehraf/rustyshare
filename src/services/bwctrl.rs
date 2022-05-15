@@ -1,26 +1,34 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use log::{debug, info};
 use retroshare_compat::{read_u16, read_u32, write_u16, write_u32};
-use std::sync::mpsc;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use crate::{
-    model::{DataCore, PeerCommand, PeerState, PeerUpdate},
+    handle_packet,
+    model::{
+        intercom::{Intercom, PeerState, PeerUpdate},
+        DataCore,
+    },
     parser::{headers::ServiceHeader, Packet},
     services::{HandlePacketResult, Service},
-    utils::simple_stats::StatsCollection,
+    utils::{self, simple_stats::StatsCollection},
 };
 
 const BWCTRL_SERVICE: u16 = 0x0021;
-const BWCTRL_SUB_TYP: u8 = 0x01; // RS_PKT_SUBTYPE_BWCTRL_ALLOWED_ITEM ?!
+const BWCTRL_SUB_TYPE: u8 = 0x01; // RS_PKT_SUBTYPE_BWCTRL_ALLOWED_ITEM ?!
 
 const BWCTRL_ITEM_TAG: u16 = 0x0035;
 
 pub struct BwCtrl {
-    events: mpsc::Receiver<PeerCommand>,
+    events: UnboundedReceiver<Intercom>,
 }
 
 impl BwCtrl {
-    pub fn new(dc: &mut DataCore) -> BwCtrl {
-        let (tx, rx) = mpsc::channel();
-        dc.subscribe_for_events(tx);
+    pub async fn new(dc: &Arc<DataCore>) -> BwCtrl {
+        let (tx, rx) = unbounded_channel();
+        dc.events_subscribe(tx).await;
         BwCtrl { events: rx }
     }
 
@@ -30,7 +38,7 @@ impl BwCtrl {
         mut packet: Packet,
     ) -> HandlePacketResult {
         assert_eq!(header.service, BWCTRL_SERVICE);
-        assert_eq!(header.sub_type, BWCTRL_SUB_TYP);
+        assert_eq!(header.sub_type, BWCTRL_SUB_TYPE);
         assert_eq!(packet.payload.len(), 10);
 
         // read tag
@@ -38,26 +46,29 @@ impl BwCtrl {
         // read len
         assert_eq!(10, read_u32(&mut packet.payload));
         // read bw limit
-        let _bw_limit = read_u32(&mut packet.payload); // status time
+        let bw_limit = read_u32(&mut packet.payload); // status time
 
-        // println!(
-        //     "[BwCtrl] received bandwidth limit of {}/s from {}",
-        //     utils::units::pretty_print_bytes(bw_limit as u64),
-        //     &packet.peer_id
-        // );
+        debug!(
+            "[BwCtrl] received bandwidth limit of {}/s from {}",
+            utils::units::pretty_print_bytes(bw_limit as u64),
+            &packet.peer_id
+        );
 
         // TODO actually care about bw limits
 
-        HandlePacketResult::Handled(None)
+        handle_packet!()
     }
 }
 
+#[async_trait]
 impl Service for BwCtrl {
     fn get_id(&self) -> u16 {
         BWCTRL_SERVICE
     }
 
-    fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
+    async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
+        debug!("handle_packet");
+
         self.handle_incoming(&packet.header.into(), packet)
     }
 
@@ -66,7 +77,7 @@ impl Service for BwCtrl {
 
         while let Ok(cmd) = self.events.try_recv() {
             match cmd {
-                PeerCommand::PeerUpdate(PeerUpdate::Status(PeerState::Connected(loc, _addr))) => {
+                Intercom::PeerUpdate(PeerUpdate::Status(PeerState::Connected(loc, _addr))) => {
                     let mut payload = vec![];
                     // write tag
                     write_u16(&mut payload, BWCTRL_ITEM_TAG);
@@ -76,13 +87,13 @@ impl Service for BwCtrl {
                     write_u32(&mut payload, 1_000_000); // bytes/sec
 
                     let packet = Packet::new(
-                        ServiceHeader::new(BWCTRL_SERVICE, BWCTRL_SUB_TYP, &payload).into(),
+                        ServiceHeader::new(BWCTRL_SERVICE, BWCTRL_SUB_TYPE, &payload).into(),
                         payload,
                         loc.clone(),
                     );
 
                     out.push(packet);
-                    // println!("[BwCtrl] sending bw limit info to {}", loc);
+                    info!("[BwCtrl] sending bw limit info to {loc}");
                 }
                 // we don't care for the rest!
                 _ => {}

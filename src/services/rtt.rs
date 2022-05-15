@@ -1,7 +1,10 @@
+use async_trait::async_trait;
+use log::{trace, debug};
 use retroshare_compat::{read_u32, read_u64};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{
+    handle_packet,
     parser::{
         headers::{Header, ServiceHeader},
         Packet,
@@ -34,14 +37,14 @@ impl Rtt {
         mut packet: Packet,
     ) -> HandlePacketResult {
         match header.sub_type {
-            0x01 => {
+            RTT_SUB_TYPE_PING => {
                 let seq_num = read_u32(&mut packet.payload); // mSeqNo
                 let ping_64 = read_u64(&mut packet.payload); // mPingTS
 
                 let item = Rtt::gen_pong(seq_num, ping_64);
-                return HandlePacketResult::Handled(Some(item));
+                return handle_packet!(item);
             }
-            0x02 => {
+            RTT_SUB_TYPE_PONG => {
                 let _seq_num = read_u32(&mut packet.payload); // mSeqNo
                 let ping_64 = read_u64(&mut packet.payload); // mPingTS
                 let ping_ts = Rtt::u64_to_ts(ping_64);
@@ -56,13 +59,13 @@ impl Rtt {
                 // calculate actual rtt
                 let rtt = now_ts.as_millis() - ping_ts.as_millis();
                 // calculate offset out of their time, assuming, that both (ping and pong) packets had an equal travel time
-                let _offset = pong_ts.as_millis() as i128 - (now_ts.as_millis() - rtt / 2) as i128;
+                let offset = pong_ts.as_millis() as i128 - (now_ts.as_millis() - rtt / 2) as i128;
 
-                // println!("received rtt: {}ms with a {}ms offset", rtt, offset);
+                trace!("received rtt: {rtt}ms with a {offset}ms offset");
             }
-            m => panic!("Rtt: sub type: {:02X} is unknown", m),
+            sub_type => log::error!("[RTT] recevied unknown sub typ {sub_type}"),
         }
-        HandlePacketResult::Handled(None)
+        handle_packet!()
     }
 
     pub fn gen_ping(seq_num: u32) -> Packet {
@@ -135,12 +138,15 @@ impl Rtt {
     }
 }
 
+#[async_trait]
 impl Service for Rtt {
     fn get_id(&self) -> u16 {
         RTT_SERVICE
     }
 
-    fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
+    async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
+        debug!("handle_packet");
+
         self.handle_incoming(&packet.header.into(), packet)
     }
 

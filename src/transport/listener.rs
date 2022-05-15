@@ -3,6 +3,8 @@ use std::{
     sync::mpsc,
 };
 
+use log::{info, warn};
+
 use crate::{
     error::RsError,
     model::{PeerCommand, PeerThreadCommand},
@@ -18,7 +20,7 @@ impl Listener {
         outer_tx: mpsc::Sender<PeerCommand>,
         inner_rx: mpsc::Receiver<PeerCommand>,
     ) -> Result<std::thread::JoinHandle<()>, RsError> {
-        println!("binding to {}", &listen_addr);
+        info!("binding to {}", &listen_addr);
         let listener = TcpListener::bind(listen_addr)?;
 
         let handler = std::thread::spawn(move || {
@@ -32,7 +34,7 @@ impl Listener {
                     Err(ref why) if why.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(std::time::Duration::from_secs(1));
                     }
-                    Err(ref why) => println!("got error: {}", why),
+                    Err(ref why) => warn!("got error: {}", why),
                 }
             }
 

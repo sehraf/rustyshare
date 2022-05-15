@@ -1,40 +1,71 @@
 [package]
 name = "rustyshare"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["sehraf <sehraf42@gmail.com>"]
-edition = "2018"
-# proc-macro = true
+edition = "2021"
 
 [features]
-# default = ["logging"]
-# logging = ["log"]
+default = ["webui_actix"]
+webui_rocket = ["rocket", "rocket_contrib"]
+webui_actix = ["actix-web", "actix-files", "mime"]
 
 [dependencies]
-# log = { version = "0.4.4", optional = true }
+retroshare_compat = { path = "retroshare_compat" }
+
 chrono = "^0"
 rpassword = "^5"
+getset = "0.1"
 dirs = "^3"
+sequoia-openpgp = "1.8"
+openssl = "0.10"
+byteorder = "1.4"
+base64 = "0.13"
+hex = { version = "0.4", features = ["serde"] }
+rand = "0.8"
 
-sequoia-openpgp = "^0"
-openssl = "^0"
-byteorder = "^1"
-base64 = "^0"
-hex = "^0"
-rand = "^0"
+# logging
+log = "0.4"
+# pretty_env_logger = "0.4"
+# env_logger = "0.9"
+flexi_logger = { version = "0.22", features = ["use_chrono_for_offset"] }
 
-rustls = "^0.20"
-# webpki = "*"
+# WebUI
+rocket = { version = "0.4.10", optional = true }
+rocket_contrib = { version = "0.4.10", default-features = false, features = [
+    "serve",
+    "json",
+], optional = true }
+actix-web = { version = "4.0", optional = true }
+actix-files = { version = "0.6", optional = true }
+mime = { version = "0.3", optional = true }
+
+# serialisation
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# # database
+# rusqlite = { version = "0.27", features = [
+#     "sqlcipher",
+# ] } # TODO switch to bundled?
+
+# Async stuff
+futures = "0.3"
+async-trait = "0.1"
+tokio = { version = "1.18", features = ["full"] }
+
+rustls = { version = "0.20", features = ["dangerous_configuration"] }
+tokio-rustls = "0.23"
+# tokio-native-tls = "^0.3"
 
 
-# pem = "*"
-# futures = "0.3.5"
+# [dependencies.rocket_contrib]
+# version = "^0.4.10"
+# default-features = false
+# features = ["serve"]
 
 # num = "0.3"
 # num-derive = "0.3"
 # num-traits = "0.2.12"
 # proc_macro = "*"
 
-# tokio-native-tls = "^0.3"
-
-retroshare_compat = { path = "retroshare_compat" }
 # retroshare_compat_derive = { path = "retroshare_compat/proc_macro" }

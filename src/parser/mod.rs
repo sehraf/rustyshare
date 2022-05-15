@@ -1,6 +1,10 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
 use headers::*;
+use log::{trace, warn};
 use retroshare_compat::basics::*;
 
 pub mod headers;
@@ -12,10 +16,9 @@ const SLICE_PREFERED_PACKET_SIZE: usize = 512;
 
 #[derive(Clone, Debug)]
 pub struct PacketInner {
-    // pub struct Packet {
     pub header: Header,
     pub payload: Vec<u8>,
-    pub peer_id: PeerId,
+    pub peer_id: Arc<SslId>,
 }
 
 /// Wraps a `PacketInner` in a `Box` to ensure heap usage
@@ -30,10 +33,14 @@ impl Packet {
         data.extend(self.payload.iter());
         data
     }
+
+    pub fn peer_id(&self) -> &Arc<SslId> {
+        &self.peer_id
+    }
 }
 
 impl Packet {
-    pub fn new(header: Header, payload: Vec<u8>, loc: PeerId) -> Packet {
+    pub fn new(header: Header, payload: Vec<u8>, loc: Arc<SslId>) -> Packet {
         Packet(Box::new(PacketInner {
             header,
             payload,
@@ -42,14 +49,14 @@ impl Packet {
     }
 
     pub fn new_without_location(header: Header, payload: Vec<u8>) -> Packet {
-        Packet::new(header, payload, PeerId::default())
+        Packet::new(header, payload, Arc::new(SslId::default()))
     }
 
     /// Used to enforce proper meta data handling.
     ///
     /// The core mostly uses this to ensure that it is known from where packets come and where they need to go.
     pub fn has_location(&self) -> bool {
-        self.peer_id != PeerId::default()
+        *self.peer_id != SslId::default()
     }
 }
 
@@ -83,13 +90,15 @@ struct SlicePacket {
 pub struct Parser {
     incoming_partial_store: Vec<SlicePacket>,
     next_id: u32,
+    location: Arc<SslId>,
 }
 
 impl Parser {
-    pub fn new() -> Parser {
+    pub fn new(location: Arc<SslId>) -> Parser {
         Parser {
             incoming_partial_store: vec![],
             next_id: 0,
+            location,
         }
     }
 
@@ -98,7 +107,6 @@ impl Parser {
         slice_packet_id: u32,
         partial_flags: u8,
         payload: &mut Vec<u8>,
-        location: &PeerId,
     ) -> Option<Packet> {
         let mut is_new = false;
         let found = self.get_slice_by_id(slice_packet_id).is_some();
@@ -108,7 +116,7 @@ impl Parser {
             // start
             if found {
                 // found existing?!
-                println!(
+                warn!(
                     "found existing packet with id {} but 'start' flag is set",
                     slice_packet_id
                 );
@@ -132,7 +140,7 @@ impl Parser {
             // end
             if is_new {
                 // end should never be also start
-                println!(
+                warn!(
                     "can't find packet with id {} but 'end' flag is set",
                     slice.slice_packet_id
                 );
@@ -141,10 +149,10 @@ impl Parser {
             // handle finished packet
             let mut header: [u8; 8] = [0; 8];
             header.copy_from_slice(&slice.payload[0..8]);
-            let header = match Header::try_parse(header) {
+            let header = match Header::try_parse(&header) {
                 Ok(h) => h,
                 _ => {
-                    println!("failed to parse header from finished slice!");
+                    warn!("failed to parse header from finished slice!");
                     self.remove_slice_by_id(slice_packet_id);
                     return None;
                 }
@@ -158,7 +166,7 @@ impl Parser {
 
             // last sanity check
             assert_eq!(payload.len(), header.get_payload_size());
-            return self.handle_incoming_packet(header, payload, location);
+            return self.handle_incoming_packet(header, payload);
         }
         None
     }
@@ -178,25 +186,22 @@ impl Parser {
         self.incoming_partial_store.remove(index);
     }
 
-    pub fn handle_incoming_packet(
-        &mut self,
-        header: Header,
-        payload: Vec<u8>,
-        location: &PeerId,
-    ) -> Option<Packet> {
-        // println!("handling packet {:?}: {:02X?}", header, payload);
+    pub fn handle_incoming_packet(&mut self, header: Header, payload: Vec<u8>) -> Option<Packet> {
+        trace!("handling packet {:?}: {:02X?}", header, payload);
         match header {
             Header::Service {
                 service, sub_type, ..
             } => {
                 // got Item
+                trace!("item");
+
                 if service == 0xaabb {
                     // silently drop slice probing packets
                     assert_eq!(sub_type, 0xcc);
                     return None;
                 }
 
-                let packet = Packet::new(header, payload, location.clone());
+                let packet = Packet::new(header, payload, self.location.clone());
 
                 return Some(packet);
             }
@@ -206,12 +211,14 @@ impl Parser {
                 ..
             } => {
                 // got Slice
+                trace!("slice");
+
                 let mut payload = payload;
-                return self.add_slice(slice_packet_id, partial_flags, &mut payload, location);
+                return self.add_slice(slice_packet_id, partial_flags, &mut payload);
             }
             // Header::Class {..} =>
             _ => {
-                println!("unsupported header! {:?}", header);
+                warn!("unsupported header! {:?}", header);
                 return None;
             }
         }

@@ -1,3 +1,5 @@
+use async_trait::async_trait;
+
 use crate::{
     parser::Packet,
     services::{HandlePacketResult, Service},
@@ -5,7 +7,7 @@ use crate::{
 };
 
 const TEMPLATE_SERVICE: u16 = 0xDEAD;
-const TEMPLATE_SUB_TYP_A: u8 = 0x01;
+const TEMPLATE_SUB_TYPE_A: u8 = 0x01;
 
 pub struct Template {}
 
@@ -15,12 +17,13 @@ impl Template {
     }
 }
 
+#[async_trait]
 impl Service for Template {
     fn get_id(&self) -> u16 {
         TEMPLATE_SERVICE
     }
 
-    fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
+    async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
         HandlePacketResult::Handled(None)
     }
 

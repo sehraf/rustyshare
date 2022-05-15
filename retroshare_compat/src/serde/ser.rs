@@ -10,7 +10,9 @@ use crate::serde::error::{Error, Result};
 use byteorder::{ByteOrder, NetworkEndian};
 use serde::ser::{self, Serialize};
 
-pub struct Serializer {
+// use super::RetroShareTLV;
+
+pub struct RetroShareWireSerializer {
     // This string starts empty and JSON is appended as values are serialized.
     pub output: Vec<u8>,
 }
@@ -22,12 +24,12 @@ pub fn to_retroshare_wire<T>(value: &T) -> Result<Vec<u8>>
 where
     T: Serialize,
 {
-    let mut serializer = Serializer { output: Vec::new() };
+    let mut serializer = RetroShareWireSerializer { output: Vec::new() };
     value.serialize(&mut serializer)?;
     Ok(serializer.output)
 }
 
-impl<'a> ser::Serializer for &'a mut Serializer {
+impl<'a> ser::Serializer for &'a mut RetroShareWireSerializer {
     // The output type produced by this `Serializer` during successful
     // serialization. Most serializers that produce text or binary output should
     // set `Ok = ()` and serialize into an `io::Write` or buffer contained
@@ -61,7 +63,6 @@ impl<'a> ser::Serializer for &'a mut Serializer {
 
     // signed numbers
     fn serialize_i8(self, v: i8) -> Result<()> {
-        // TODO test if this is ok
         self.output.push(v as u8);
         Ok(())
     }
@@ -161,16 +162,20 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     // Serialize a byte array as an array of bytes. Could also use a base64
     // string here. Binary formats will typically represent byte arrays more
     // compactly.
-    fn serialize_bytes(self, _v: &[u8]) -> Result<()> {
+    fn serialize_bytes(self, v: &[u8]) -> Result<()> {
         // use serde::ser::SerializeSeq;
         // let mut seq = self.serialize_seq(Some(v.len()))?;
         // for byte in v {
         //     seq.serialize_element(byte)?;
         // }
         // seq.end()
-        Err(Error::Message(String::from(
-            "byte is not implemented/serializable",
-        )))
+
+        // Err(Error::Message(String::from(
+        //     "byte is not implemented/serializable",
+        // )))
+
+        self.output.extend_from_slice(v);
+        Ok(())
     }
 
     // An absent optional is represented as the JSON `null`.
@@ -462,7 +467,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
 //
 // This impl is SerializeSeq so these methods are called after `serialize_seq`
 // is called on the Serializer.
-impl<'a> ser::SerializeSeq for &'a mut Serializer {
+impl<'a> ser::SerializeSeq for &'a mut RetroShareWireSerializer {
     // Must match the `Ok` type of the serializer.
     type Ok = ();
     // Must match the `Error` type of the serializer.
@@ -487,7 +492,7 @@ impl<'a> ser::SerializeSeq for &'a mut Serializer {
 }
 
 // Same thing but for tuples.
-impl<'a> ser::SerializeTuple for &'a mut Serializer {
+impl<'a> ser::SerializeTuple for &'a mut RetroShareWireSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -508,7 +513,7 @@ impl<'a> ser::SerializeTuple for &'a mut Serializer {
 }
 
 // Same thing but for tuple structs.
-impl<'a> ser::SerializeTupleStruct for &'a mut Serializer {
+impl<'a> ser::SerializeTupleStruct for &'a mut RetroShareWireSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -537,7 +542,7 @@ impl<'a> ser::SerializeTupleStruct for &'a mut Serializer {
 //
 // So the `end` method in this impl is responsible for closing both the `]` and
 // the `}`.
-impl<'a> ser::SerializeTupleVariant for &'a mut Serializer {
+impl<'a> ser::SerializeTupleVariant for &'a mut RetroShareWireSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -565,7 +570,7 @@ impl<'a> ser::SerializeTupleVariant for &'a mut Serializer {
 // `serialize_entry` method allows serializers to optimize for the case where
 // key and value are both available simultaneously. In JSON it doesn't make a
 // difference so the default behavior for `serialize_entry` is fine.
-impl<'a> ser::SerializeMap for &'a mut Serializer {
+impl<'a> ser::SerializeMap for &'a mut RetroShareWireSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -606,7 +611,7 @@ impl<'a> ser::SerializeMap for &'a mut Serializer {
 
 // Structs are like maps in which the keys are constrained to be compile-time
 // constant strings.
-impl<'a> ser::SerializeStruct for &'a mut Serializer {
+impl<'a> ser::SerializeStruct for &'a mut RetroShareWireSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -630,7 +635,7 @@ impl<'a> ser::SerializeStruct for &'a mut Serializer {
 
 // Similar to `SerializeTupleVariant`, here the `end` method is responsible for
 // closing both of the curly braces opened by `serialize_struct_variant`.
-impl<'a> ser::SerializeStructVariant for &'a mut Serializer {
+impl<'a> ser::SerializeStructVariant for &'a mut RetroShareWireSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -653,3 +658,24 @@ impl<'a> ser::SerializeStructVariant for &'a mut Serializer {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
+// // fn<S>(&T, S) -> Result<S::Ok, S::Error> where S: Serializer
+// fn serialize_tlv<S, T>(tlv: &T, serializer: S) -> Result<S::Ok>
+// where
+//     S: serde::Serializer<Ok = ()>,
+//     T: RetroShareTLV + serde::Serialize,
+// {
+//     let tag = tlv.get_tlv_tag();
+//     let data = to_retroshare_wire(tlv).expect("failed to serialized");
+//     let len = data.len();
+
+//     // tag.serialize(serializer).expect("failed to serialized");
+//     // len.serialize(serializer)?;
+//     // data.serialize(serializer).expect("failed to serialized");
+//     // serializer.serialize_u16(tag).expect("failed to serialized");
+//     // let s = serializer.serialize_seq(len).expect("failed to serialized");
+//     // data.iter().for_each(|b| s.serialize_element(b));
+//     // s.end();
+
+//     Ok(())
+// }

@@ -1,7 +1,13 @@
-use std::io::{self, Read, Write};
-use std::path;
-use std::{fs::File, sync::Arc};
+use std::{
+    fs::File,
+    io::{self, Read, Write},
+    path,
+    sync::Arc,
+};
 
+use log::debug;
+#[allow(unused)]
+use log::{trace, warn};
 use openpgp::{
     cert::prelude::*,
     crypto::SessionKey,
@@ -11,17 +17,22 @@ use openpgp::{
 };
 use openssl::{
     pkey::{self, PKey},
+    // ssl::Ssl,
     x509::X509,
 };
+use retroshare_compat::sqlite::DbConnection;
 use rustls::{Certificate, PrivateKey};
 use sequoia_openpgp as openpgp;
+
+use crate::model::gxs::{Gxs, GxsType};
 
 /// Simple type wrapper for DER encoded public key
 pub type PublicKeyDer = Vec<u8>;
 /// Simple type wrapper for DER encoded private key
 pub type PrivateKeyDer = Vec<u8>;
+
 /// Key pair container
-#[derive(Clone)]
+#[derive(Debug)]
 pub struct SslKey {
     keys: Arc<Box<(PublicKeyDer, PrivateKeyDer)>>,
 }
@@ -60,8 +71,20 @@ impl From<SslKey> for Certificate {
     }
 }
 
+impl From<&SslKey> for Certificate {
+    fn from(key: &SslKey) -> Self {
+        Certificate(key.public_key().to_owned())
+    }
+}
+
 impl From<SslKey> for PrivateKey {
     fn from(key: SslKey) -> Self {
+        PrivateKey(key.private_key().to_owned())
+    }
+}
+
+impl From<&SslKey> for PrivateKey {
+    fn from(key: &SslKey) -> Self {
         PrivateKey(key.private_key().to_owned())
     }
 }
@@ -74,19 +97,33 @@ impl From<(PublicKeyDer, PrivateKeyDer)> for SslKey {
     }
 }
 
+impl Clone for SslKey {
+    fn clone(&self) -> Self {
+        SslKey {
+            keys: self.keys.clone(),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.keys = source.keys.clone();
+    }
+}
+
 impl SslKey {
     pub fn load_encrypted(
         &self,
         pgp: &Cert,
         localtion_path: &path::Path,
         pw: &str,
-    ) -> Result<SslKey, std::io::Error> {
+    ) -> Result<(SslKey, Vec<Gxs>), std::io::Error> {
+        // TODO fix password handling
+
         // decrypt (ssl)key passphrase
         let full_path = localtion_path.join("keys/");
         let password = SslKey::decrypt_passphrase(&full_path, pgp, pw)?;
 
         // print ssl password for debug only!
-        // println!("{}", String::from_utf8_lossy(&password));
+        // log::error!("{}", String::from_utf8_lossy(&password));
 
         // sounds a bit stupid, RS won't generate such passphrases!
         assert!(
@@ -95,6 +132,7 @@ impl SslKey {
         );
 
         // OpenSSL stuff
+        debug!("loading openssl stuff");
 
         // user_cert.pem
         let mut user_cert_file = File::open(&full_path.join("user_cert.pem"))?;
@@ -113,26 +151,32 @@ impl SslKey {
         let user_pk_open = PKey::private_key_from_pem_passphrase(&user_pk, password.as_ref())
             .expect("failed to decrypt private key!");
         let user_pk = user_pk_open.private_key_to_der()?;
-        // // native-tls stuff
-        // let mut identity_file = File::open(&full_path.join("identity.pfx"))?;
-        // let mut identity = Vec::new();
-        // identity_file.read_to_end(&mut identity)?;
 
-        // let identity = Identity::from_pkcs12(&identity, &"phpkid").unwrap();
+        // sqlite stufff
+        debug!("loading sqlite stuff");
+        // TODO very WIP
+        let full_path = localtion_path.join("gxs/gxsid_db");
+        let db = DbConnection::new(full_path, &String::from_utf8_lossy(&password))
+            .map_err(|err| warn!("{err}"))
+            .unwrap();
+        let gxs_id = Gxs::new(GxsType::Id, db);
 
-        // let user_pk = PKey::private_key_from_pem_callback(&user_pk, |pw_buffer| {
-        //     assert!(password.len() <= pw_buffer.len(), "not enough space!");
-        //     pw_buffer[0..password.len()].copy_from_slice(password.as_slice());
-        //     Ok(password.len())
-        // })
-        // .expect("failed to decrypt private key!");
+        let full_path = localtion_path.join("gxs/gxsforums_db");
+        let db = DbConnection::new(full_path, &String::from_utf8_lossy(&password))
+            .map_err(|err| warn!("{err}"))
+            .unwrap();
+        let gxs_forum = Gxs::new(GxsType::Forum, db);
 
-        Ok((user_cert, user_pk).into())
+        // XXX
+        // if log::log_enabled!(log::Level::Debug) {
+        //     debug!("---");
+        //     debug!("{:#?}", gxs_forum.get_meta());
+        //     debug!("---");
+        //     debug!("{:#?}", gxs_forum.get_msg());
+        //     debug!("---");
+        // }
 
-        // Ok((
-        //     user_cert_open,
-        //     user_pk_open, // , identity
-        // ))
+        Ok(((user_cert, user_pk).into(), vec![gxs_id, gxs_forum]))
     }
 
     fn decrypt_passphrase(
@@ -145,7 +189,7 @@ impl SslKey {
         let mut file = match File::open(&full_path) {
             Ok(file) => file,
             Err(why) => {
-                println!("couldn't open {}: {}", full_path.display(), why);
+                warn!("couldn't open {}: {}", full_path.display(), why);
                 return Err(why);
             }
         };
@@ -153,7 +197,7 @@ impl SslKey {
         match file.read_to_end(&mut msg) {
             Ok(_) => {}
             Err(why) => {
-                println!("failed to load ssl_{}: {}", full_path.display(), why);
+                warn!("failed to load ssl_{}: {}", full_path.display(), why);
                 return Err(why);
             }
         }

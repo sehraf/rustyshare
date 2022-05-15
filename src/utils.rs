@@ -5,6 +5,7 @@ pub mod simple_stats {
     pub type StatEntry = HashMap<String, (StatsPrinter, i32)>;
     pub type StatsCollection = (Instant, HashMap<String, StatEntry>);
 
+    #[allow(dead_code)]
     pub fn print(data: &StatsCollection) {
         println!("Stats:");
         println!(

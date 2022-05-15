@@ -1,4 +1,5 @@
 use byteorder::{ByteOrder, NetworkEndian};
+use log::{info, warn};
 use retroshare_compat::{
     basics::*,
     groups::*,
@@ -13,7 +14,7 @@ use retroshare_compat::{
 use std::{collections::HashSet, sync::Arc};
 
 use crate::{
-    model::peers::{location::Location, Peer},
+    model::{location::Location, person::Peer},
     parser::{
         self,
         headers::{Header, HEADER_SIZE},
@@ -25,14 +26,14 @@ pub fn read_peer_net_item(
 ) -> (
     PgpId,
     String,
-    PeerId,
-    (HashSet<TlvIpAddressInfo>, HashSet<TlvIpAddressInfo>),
+    Arc<SslId>,
+    (Vec<TlvIpAddressInfo>, Vec<TlvIpAddressInfo>),
 ) {
     // RsTypeSerializer::serial_process(j,ctx,nodePeerId,"peerId") ;
     let mut peer_id = [0u8; 16];
     let d: Vec<u8> = data.drain(..16).collect();
     peer_id.copy_from_slice(d.as_slice());
-    let peer_id = PeerId(peer_id);
+    let peer_id = Arc::new(SslId(peer_id));
 
     // RsTypeSerializer::serial_process(j,ctx,pgpId,"pgpId") ;
     let mut pgp_id = [0u8; 8];
@@ -93,7 +94,15 @@ pub fn read_peer_net_item(
     // RsTypeSerializer::serial_process<uint16_t>(j,ctx,domain_port,"domain_port") ;
     let _hidden_port = read_u16(data);
 
-    (pgp_id, location, peer_id, (ips_local, ips_external))
+    (
+        pgp_id,
+        location,
+        peer_id,
+        (
+            ips_local.into_iter().collect(),
+            ips_external.into_iter().collect(),
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -119,6 +128,7 @@ pub fn write_u64(data: &mut Vec<u8>, offset: &mut usize, val: u64) {
     *offset += SIZE;
 }
 
+#[allow(dead_code)]
 pub fn gen_slice_probe() -> Vec<u8> {
     // vec![0x02, 0xaa, 0xbb, 0xcc, 0x00, 0x00, 0x00, 0x08]
     let header = parser::headers::Header::Service {
@@ -252,11 +262,11 @@ pub fn parse_general_cfg(data: &Vec<u8>) -> () {
         // get header
         let mut header: [u8; 8] = [0; 8];
         header.copy_from_slice(&data[offset..offset + 8]);
-        let (class, typ, sub_type, packet_size) = match Header::try_parse(header) {
+        let (class, typ, sub_type, packet_size) = match Header::try_parse(&header) {
             Ok(header) => match header {
                 Header::Class {
                     class,
-                    typ,
+                    ty: typ,
                     sub_type,
                     size,
                 } => (class, typ, sub_type, size),
@@ -362,10 +372,10 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
     while !data.is_empty() {
         // get header
         let header: Vec<u8> = data.drain(..8).collect();
-        let (class, typ, sub_type, packet_size) = match Header::from(&header) {
+        let (class, ty, sub_type, packet_size) = match Header::from(&header) {
             Header::Class {
                 class,
-                typ,
+                ty: typ,
                 sub_type,
                 size,
             } => (class, typ, sub_type, size),
@@ -375,7 +385,7 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
         match class {
             // const uint8_t RS_PKT_CLASS_BASE      = 0x01;
             // const uint8_t RS_PKT_CLASS_CONFIG    = 0x02;
-            0x02 => match typ {
+            0x02 => match ty {
                 // const uint8_t RS_PKT_TYPE_GENERAL_CONFIG = 0x01;
                 0x01 => {
                     // RsGeneralConfigSerialiser
@@ -405,15 +415,14 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
                                 let key = read_string_typed(data, 0x0053);
                                 // const uint16_t TLV_TYPE_STR_VALUE     = 0x0054;
                                 let value = read_string_typed(data, 0x0054);
-                                println!("[load_peers] KEY_VALUE {}: {}", key, value);
+                                info!("[load_peers] KEY_VALUE {}: {}", key, value);
 
                                 assert_eq!(end, data.len());
                             }
                         }
-                        m => {
-                            println!(
-                                "unable to handle RsGeneralConfigSerialiser sub type {:02X}",
-                                m
+                        sub_type => {
+                            warn!(
+                                "unable to handle RsGeneralConfigSerialiser sub type {sub_type:02X}"
                             );
                             data.drain(..packet_size as usize - HEADER_SIZE);
                         }
@@ -439,7 +448,7 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
                                     s2
                                 };
 
-                                println!("adding peer {:?} with location {:?}", &name, &location);
+                                info!("adding peer {:?} with location {:?}", &name, &location);
 
                                 let mut peer =
                                     persons.iter_mut().find(|p| p.get_pgp_id() == &pgp_id);
@@ -455,12 +464,12 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
                                 let loc = Arc::new(Location::new(
                                     location,
                                     peer_id,
-                                    peer.get_pgp_id().clone(),
+                                    Arc::new(peer.get_pgp_id().to_owned()),
                                     ips,
-                                    Arc::downgrade(peer),
+                                    peer.to_owned(),
                                 ));
 
-                                peer.add_location(Arc::downgrade(&loc));
+                                peer.add_location(loc.to_owned());
                                 locations.push(loc);
                             }
                         }
@@ -477,7 +486,7 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
                                 // #define FLAGS_TAG_SERVICE_PERM 	0x380912
                                 let flags = read_u32(data);
 
-                                println!(
+                                info!(
                                     "[load_peers] PEER_PERMISSIONS [{:02}] {}: {:#032b}",
                                     i, pgp_id, flags
                                 );
@@ -487,15 +496,17 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
                         0x6 => {
                             let entries: RsPeerBandwidthLimitsItem =
                                 from_retroshare_wire(data).expect("failed to deserialize");
-                            println!("Bandwidth: {:?}", entries);
+                            info!("Bandwidth: {:?}", entries);
                         }
                         // const uint8_t RS_PKT_SUBTYPE_NODE_GROUP            = 0x07;
                         0x07 => {
                             let group = read_rs_node_group_item(data);
-                            println!("group info: {:?}", group);
+                            info!("group info: {:?}", group);
                         }
-                        m => {
-                            println!("unable to handle RsPeerConfigSerialiser sub type {:02X}", m);
+                        sub_type => {
+                            warn!(
+                                "unable to handle RsPeerConfigSerialiser sub type {sub_type:02X}"
+                            );
                             data.drain(..packet_size as usize - HEADER_SIZE);
                         }
                     }
@@ -504,9 +515,9 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
                 // const uint8_t RS_PKT_TYPE_FILE_CONFIG    = 0x04;
                 // const uint8_t RS_PKT_TYPE_PLUGIN_CONFIG  = 0x05;
                 // const uint8_t RS_PKT_TYPE_HISTORY_CONFIG = 0x06;
-                m => println!("unable to handle type {:02X}", m),
+                ty => warn!("unable to handle type {ty:02X}"),
             },
-            m => println!("unable to handle class {:02X}", m),
+            class => warn!("unable to handle class {class:02X}"),
         }
     }
 
@@ -516,12 +527,7 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
         println!(" - person '{}'", person.get_name());
         let locs = person.get_locations();
         for loc in locs.iter() {
-            let loc = loc.upgrade();
-            if let Some(loc) = loc {
-                println!("   - location '{}'", loc.get_name());
-            } else {
-                unreachable!("We just allocated the locations, an upgrade should work fine!");
-            }
+            println!("   - location '{}'", loc.get_name());
         }
     }
 
@@ -530,8 +536,6 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
 
 #[cfg(test)]
 mod tests {
-    use retroshare_compat::service_info::RsServiceInfo;
-
     #[test]
     fn slice_probe() {
         let a = crate::serial_stuff::gen_slice_probe();
@@ -553,7 +557,7 @@ mod tests {
         let mut services = Services::new();
         let rtt = Box::new(Rtt::new());
         services.add_service(rtt);
-        let list: Vec<RsServiceInfo> = services.get_services().map(|s| s.into()).collect();
+        let list = services.get_service_infos();
         let c = crate::services::service_info::gen_service_info(&list).to_bytes();
         assert_eq!(a, c);
     }

@@ -225,7 +225,7 @@ pub fn write_disc_pgp_list_item(item: &DiscPgpListItem) -> Vec<u8> {
 #[derive(Debug, Default)]
 pub struct DiscContactItem {
     pub pgp_id: PgpId,
-    pub ssl_id: PeerId,
+    pub ssl_id: SslId,
 
     // COMMON
     pub location: String, // TLV String!

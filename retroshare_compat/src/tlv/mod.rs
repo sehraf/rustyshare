@@ -15,6 +15,9 @@ use crate::{
 // pub mod serde;
 // pub mod typed_string;
 // pub mod macros;
+// mod nom; // IT'S A PITA
+// pub mod tlv; // IT'S A PITA
+pub mod string;
 
 pub const TLV_HEADER_SIZE: usize = 6;
 
@@ -91,7 +94,7 @@ macro_rules! make_tlv_id_set_type {
     };
 }
 
-make_tlv_id_set_type!(TlvPeerIdSet, PeerId, TLV_TYPE_PEERSET);
+make_tlv_id_set_type!(TlvPeerIdSet, SslId, TLV_TYPE_PEERSET);
 make_tlv_id_set_type!(TlvPgpIdSet, PgpId, TLV_TYPE_PGPIDSET);
 make_tlv_id_set_type!(TlvHashSet, Sha1CheckSum, TLV_TYPE_HASHSET);
 make_tlv_id_set_type!(TlvGxsIdSet, GxsId, TLV_TYPE_GXSIDSET);
@@ -114,69 +117,6 @@ pub fn write_string_typed(data: &mut Vec<u8>, val: &str, tag: u16) {
     write_u32(data, (val.len() + TLV_HEADER_SIZE) as u32); // len
     data.extend_from_slice(val.as_bytes());
 }
-
-// pub struct TypedString {
-//     str: String,
-//     tag: u16,
-// }
-
-// impl TypedString {
-//     pub fn new(s: &str, tag: u16) -> TypedString {
-//         TypedString {
-//             str: s.to_owned(),
-//             tag,
-//         }
-//     }
-// }
-
-// impl Serialize for TypedString {
-//     // fn serialize<S: ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-//     //     use ser::SerializeTuple;
-
-//     //     // let mut seq = serializer.serialize_tuple(SIGNATURE_LENGTH)?;
-
-//     //     // for byte in &self.0[..] {
-//     //     //     seq.serialize_element(byte)?;
-//     //     // }
-
-//     //     // seq.end()
-//     //     serializer.
-//     // }
-//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-//     where
-//         S: serde::Serializer,
-//     {
-//         serializer.serialize_u16(self.tag)?;
-//         // len is part of the following
-//         serializer.serialize_str(self.str)y
-//     }
-// }
-
-// impl<'de> Deserialize<'de> for TypedString {
-//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-//     where
-//         D: serde::Deserializer<'de>,
-//     {
-//         struct Vis {};
-
-//         impl Visitor<'de> for Vis {
-//             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-//                 formatter.write_str("tlv encoded string")
-//             }
-
-//             fn visit_u16<E>(self, v: u16) -> Result<Self::Value, E>
-//             where
-//                     E: serde::de::Error, {
-//                 Ok(v)
-//             }
-
-//             // fn visit_b
-//         }
-
-//         deserializer.deserialize_u16(Vis).and_then(|tag| assert_eq!(tag, self.tag))?;
-//         deserializer.deserialize_bytes(Vis)
-//     }
-// }
 
 // tlv ip addr
 
@@ -302,7 +242,7 @@ impl fmt::Display for TlvIpAddressInfo {
         write!(f, " addr: {}", self.addr)?;
         write!(f, " seen_time: {}", self.seen_time)?;
         write!(f, " source: {}", self.source)?;
-        write!(f, " ]")
+        write!(f, "]")
     }
 }
 
@@ -364,4 +304,60 @@ pub fn write_tlv_ip_addr_set(data: &mut Vec<u8>, addrs: &TlvIpAddrSet) {
     write_u16(data, 0x1071);
     write_u32(data, (TLV_HEADER_SIZE + payload.len()) as u32);
     data.append(&mut payload);
+}
+
+#[cfg(test)]
+mod tests_tlv {
+    use std::collections::HashMap;
+
+    use crate::{
+        serde::{from_retroshare_wire, to_retroshare_wire, RetroShareTLV},
+        tlv::read_string_typed,
+    };
+    use ::serde::{Deserialize, Serialize};
+
+    use super::write_string_typed;
+
+    #[test]
+    fn test_string_typed() {
+        let s = "test123";
+        let tag = 0x1337;
+
+        let mut data = vec![];
+
+        write_string_typed(&mut data, &s, tag);
+
+        let expected = vec![
+            0x13, 0x37, 0x00, 0x00, 0x00, 0x0d, 0x74, 0x65, 0x73, 0x74, 0x31, 0x32, 0x33,
+        ];
+        assert_eq!(&data, &expected);
+
+        assert_eq!(read_string_typed(&mut data, tag), s);
+    }
+
+    // #[test]
+    // fn test_tlv_basic() {
+    //     #[derive(Serialize)]
+    //     struct Dummy {
+    //         #[serde(serialize_with = "serialize_tlv")]
+    //         d: Dummy2,
+    //     }
+    //     #[derive(Serialize)]
+    //     struct Dummy2 {
+    //         a: u16,
+    //     }
+
+    //     impl RetroShareTLV for Dummy {
+    //         fn get_tlv_tag(&self) -> u16 {
+    //             0x1337
+    //         }
+    //     }
+
+    //     let a = Dummy {
+    //         d: Dummy2 { a: 42 },
+    //     };
+
+    //     let data = to_retroshare_wire(&a).expect("failed to serialize");
+    //     println!("{:?}", data)
+    // }
 }

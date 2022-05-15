@@ -1,10 +1,18 @@
+use async_trait::async_trait;
+use chrono::Duration;
+use log::{info, debug};
 use retroshare_compat::read_u32;
 use std::time::SystemTime;
 
-use crate::{parser::{
+use crate::{
+    parser::{
         headers::{self, Header, ServiceHeader},
         Packet,
-    }, serial_stuff, services::{HandlePacketResult, Service}, utils::simple_stats::StatsCollection};
+    },
+    serial_stuff,
+    services::{HandlePacketResult, Service},
+    utils::simple_stats::StatsCollection, handle_packet,
+};
 
 const STATUS_SERVICE: u16 = 0x0102;
 const STATUS_SUB_SERVICE: u8 = 0x01;
@@ -36,7 +44,7 @@ impl From<u32> for StatusValue {
             0x0002 => StatusValue::Busy,
             0x0003 => StatusValue::Online,
             0x0004 => StatusValue::Inactive,
-            value => panic!("unknown status value {}", value),
+            value => panic!("unknown status value {value}"),
         }
     }
 }
@@ -84,22 +92,23 @@ impl Status {
         assert_eq!(header.sub_type, STATUS_SUB_SERVICE);
         assert_eq!(packet.payload.len(), 8);
 
-        let _ = read_u32(&mut packet.payload); // status time
-        println!(
-            "[status] received status {}",
-            StatusValue::from(read_u32(&mut packet.payload)).to_string()
-        );
+        let _ts = Duration::seconds(read_u32(&mut packet.payload) as i64);
+        let status = StatusValue::from(read_u32(&mut packet.payload));
+        info!("[status] received status {}", status.to_string());
 
-        HandlePacketResult::Handled(None)
+        handle_packet!()
     }
 }
 
+#[async_trait]
 impl Service for Status {
     fn get_id(&self) -> u16 {
         STATUS_SERVICE
     }
 
-    fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
+    async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
+        debug!("handle_packet");
+        
         self.handle_incoming(&packet.header.into(), packet)
     }
 

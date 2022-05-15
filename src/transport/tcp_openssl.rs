@@ -3,6 +3,7 @@ use std::{
     net::{SocketAddr, TcpStream},
 };
 
+use log::{info, warn};
 use openssl::{
     pkey::{PKey, Private},
     ssl::{SslConnector, SslMethod, SslStream},
@@ -25,31 +26,28 @@ pub struct ConTcpOpenssl {
 }
 
 impl RsPeerConnection for ConTcpOpenssl {
-    fn init(ssl_key: &SslKey, target_id: &openpgp::Cert) -> Option<Box<Self>> {
-        Some(Box::new(ConTcpOpenssl {
+    async fn init(ssl_key: &SslKey, target_id: &openpgp::Cert) -> Self {
+        ConTcpOpenssl {
             con: None,
             // own_key: ssl_key.to_owned(),
-
             target: None,
             target_id: target_id.to_owned(),
 
             b: Builder::new(ssl_key),
-        }))
+        }
     }
 
-    fn connect(&mut self, addr: ConnectionType) -> bool {
+    async fn connect<T>(&mut self, addr: ConnectionType) -> Result<T> {
         if let ConnectionType::Tcp(addr) = addr {
             let con = self.b.connect(&addr, &self.target_id);
             if con.is_none() {
-                return false;
+                return None;
             }
-            
-            self.con = con;
-            self.target = Some(addr);
 
-            return true;
+            Some(con)
+        } else {
+            None
         }
-        false
     }
 
     fn target(&self) -> ConnectionType {
@@ -100,33 +98,36 @@ impl Builder {
         }
     }
 
-    pub fn connect(
+    pub async fn connect(
         &self,
         target: &SocketAddr,
         _target_pub: &openpgp::Cert,
     ) -> Option<SslStream<TcpStream>> {
-        // tcp connect
-        let socket = match TcpStream::connect_timeout(&target, std::time::Duration::from_secs(5)) {
-            Ok(s) => s,
-            Err(_why) => {
-                // println!("failed to connecto to {}: {}", &self.target, why);
-                return None;
-            }
-        };
+        // // tcp connect
+        // let socket = match TcpStream::connect_timeout(&target, std::time::Duration::from_secs(5)) {
+        //     Ok(s) => s,
+        //     Err(_why) => {
+        //         // println!("failed to connecto to {}: {}", &self.target, why);
+        //         return None;
+        //     }
+        // };
 
-        // ssl connect client
-        let stream = match self.ssl_connector.connect("sehraf", socket) {
-            Ok(s) => s,
-            Err(why) => {
-                println!("handshake failure: {}", why);
-                return None;
-            }
-        };
+        // // ssl connect client
+        // let stream = match self.ssl_connector.connect("sehraf", socket) {
+        //     Ok(s) => s,
+        //     Err(why) => {
+        //         warn!("handshake failure: {}", why);
+        //         return None;
+        //     }
+        // };
 
-        // make non blocking
-        stream.get_ref().set_nonblocking(true).unwrap();
+        // // make non blocking
+        // stream.get_ref().set_nonblocking(true).unwrap();
 
-        Some(stream)
+        // Some(stream)
+
+        let tcp = tokio::net::TcpStream::connect(target).await.ok()?;
+        let ssl = self.ssl_connector.connect("sehraf", socket).ok()?;
     }
 
     #[allow(unused)]
@@ -136,7 +137,7 @@ impl Builder {
         let stream = match ssl.accept(socket) {
             Ok(s) => s,
             Err(why) => {
-                println!("incoming: {}", why);
+                info!("incoming: {}", why);
                 return None;
             }
         };

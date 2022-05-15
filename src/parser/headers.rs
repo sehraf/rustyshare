@@ -1,14 +1,12 @@
-use byteorder::{BigEndian, ByteOrder, NetworkEndian};
-// use std::fmt;
+use std::fmt::Display;
+
 use crate::error::*;
+use byteorder::{BigEndian, ByteOrder, NetworkEndian};
 
 pub const HEADER_SIZE: usize = 8;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Header {
-    // Raw {
-    //     data: [u8; 8],
-    // },
     Slice {
         partial_flags: u8,
         slice_packet_id: u32,
@@ -21,7 +19,7 @@ pub enum Header {
     },
     Class {
         class: u8,
-        typ: u8,
+        ty: u8,
         sub_type: u8,
         size: u32,
     },
@@ -30,25 +28,24 @@ pub enum Header {
 impl Header {
     fn version(&self) -> u8 {
         match self {
-            // Header::Raw { .. } => 0xff,
             Header::Slice { .. } => 0x10,
             Header::Service { .. } => 0x02,
             Header::Class { .. } => 0x01,
         }
     }
 
-    pub fn try_parse(data: [u8; 8]) -> Result<Header, RsError> {
+    pub fn try_parse(data: &[u8; 8]) -> Result<Header, RsError> {
         match data[0] {
             0x01 => {
                 // got class
                 let t = NetworkEndian::read_u32(&data[0..4]);
                 let class = (t >> 16) as u8;
-                let typ = (t >> 8) as u8;
+                let ty = (t >> 8) as u8;
                 let sub_type = t as u8;
                 let size = NetworkEndian::read_u32(&data[4..8]);
                 Ok(Header::Class {
                     class,
-                    typ,
+                    ty,
                     sub_type,
                     size,
                 })
@@ -88,8 +85,6 @@ impl Header {
 
     pub fn get_payload_size(&self) -> usize {
         match self {
-            // can't handle raw!
-            // Header::Raw { .. } => Err(RsError::ParserError(RsErrorParser::IsRawHeader)),
             // slice, "new format", size field is payload size (excluding 8 bytes for the header)
             Header::Slice { ref size, .. } => size.clone() as usize,
             // service + class, "old format", size field includes 8 byte header
@@ -102,7 +97,6 @@ impl Header {
 
     pub fn to_bytes(self) -> [u8; 8] {
         match self {
-            // Header::Raw { data } => data,
             Header::Slice {
                 partial_flags,
                 slice_packet_id,
@@ -137,7 +131,7 @@ impl Header {
             }
             Header::Class {
                 class,
-                typ,
+                ty: typ,
                 sub_type,
                 size,
             } => {
@@ -178,7 +172,7 @@ impl From<ClassHeader> for Header {
     fn from(header: ClassHeader) -> Self {
         Header::Class {
             class: header.class,
-            typ: header.typ,
+            ty: header.typ,
             sub_type: header.sub_type,
             size: header.size,
         }
@@ -193,21 +187,44 @@ impl From<&Vec<u8>> for Header {
         raw.copy_from_slice(&data[0..HEADER_SIZE]);
 
         // crash here
-        Header::try_parse(raw).expect("failed to parse header!")
+        Header::try_parse(&raw).expect("failed to parse header!")
     }
 }
 
-// impl TryFrom<&Vec<u8>> for Header {
-//     fn try_from(data: &Vec<u8>) -> Result<Self, Self::Error> {
-//         assert_eq!(data.len(), HEADER_SIZE);
-//         // copy into array
-//         let mut raw = [0 as u8; HEADER_SIZE];
-//         raw.copy_from_slice(&data[0..HEADER_SIZE]);
-
-//         // crash here
-//         Header::try_parse(raw)
-//     }
-// }
+impl Display for Header {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Header::Class {
+                class,
+                ty: typ,
+                sub_type,
+                size,
+            } => {
+                write!(
+                    f,
+                    "Header::Class: class: {class}, typ: {typ}, sub_type: {sub_type}, size: {size}"
+                )
+            }
+            Header::Service {
+                service,
+                sub_type,
+                size,
+            } => {
+                write!(
+                    f,
+                    "Header::Service: service: {service}, sub_type: {sub_type}, size: {size}"
+                )
+            }
+            Header::Slice {
+                partial_flags,
+                slice_packet_id,
+                size,
+            } => {
+                write!(f, "Header::Slice: partial_flags: {partial_flags}, slice_packet_id: {slice_packet_id}, size: {size}")
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct SliceHeader {
@@ -280,7 +297,7 @@ impl From<Header> for ClassHeader {
         match header {
             Header::Class {
                 class,
-                typ,
+                ty: typ,
                 sub_type,
                 size,
             } => ClassHeader {
@@ -307,7 +324,7 @@ mod tests {
         let a: [u8; 8] = serial_stuff::gen_slice_probe().try_into().unwrap();
 
         // let header = Header::Raw { data: a.clone() };
-        let header = Header::try_parse(a.clone()).unwrap();
+        let header = Header::try_parse(&a).unwrap();
 
         match header {
             Header::Service {

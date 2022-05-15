@@ -6,25 +6,27 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::serde::error::{Error, Result};
+use crate::{
+    read_u32,
+    serde::error::{Error, Result},
+};
 use byteorder::{ByteOrder, NetworkEndian};
 use serde::de::{
-    self, Deserialize, DeserializeSeed, EnumAccess, MapAccess, SeqAccess,
-    VariantAccess, Visitor,
+    self, Deserialize, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor,
 };
 // use std::ops::{AddAssign, MulAssign, Neg};
 
-pub struct Deserializer<'de> {
+pub struct RetroShareWireDeserializer<'de> {
     input: &'de mut Vec<u8>,
 }
 
-impl<'de> Deserializer<'de> {
+impl<'de> RetroShareWireDeserializer<'de> {
     // By convention, `Deserializer` constructors are named like `from_xyz`.
     // That way basic use cases are satisfied by something like
     // `serde_json::from_str(...)` while advanced use cases that require a
     // deserializer can make one with `serde_json::Deserializer::from_str(...)`.
     pub fn from_retroshare_wire(input: &'de mut Vec<u8>) -> Self {
-        Deserializer { input }
+        RetroShareWireDeserializer { input }
     }
 }
 
@@ -37,10 +39,10 @@ pub fn from_retroshare_wire<'a, T>(s: &'a mut Vec<u8>) -> Result<T>
 where
     T: Deserialize<'a>,
 {
-    let mut deserializer = Deserializer::from_retroshare_wire(s);
+    let mut deserializer = RetroShareWireDeserializer::from_retroshare_wire(s);
     let t = T::deserialize(&mut deserializer)?;
     // if deserializer.input.is_empty() {
-        Ok(t)
+    Ok(t)
     // } else {
     //     Err(Error::TrailingBytes)
     // }
@@ -49,89 +51,7 @@ where
 // SERDE IS NOT A PARSING LIBRARY. This impl block defines a few basic parsing
 // functions from scratch. More complicated formats may wish to use a dedicated
 // parsing library to help implement their Serde deserializer.
-impl<'de> Deserializer<'de> {
-    // // Look at the first character in the input without consuming it.
-    // fn peek_char(&mut self) -> Result<char> {
-    //     self.input.chars().next().ok_or(Error::Eof)
-    // }
-
-    // // Consume the first character in the input.
-    // fn next_char(&mut self) -> Result<char> {
-    //     let ch = self.peek_char()?;
-    //     self.input = &self.input[ch.len_utf8()..];
-    //     Ok(ch)
-    // }
-
-    // // Parse the JSON identifier `true` or `false`.
-    // fn parse_bool(&mut self) -> Result<bool> {
-    //     if self.input.starts_with("true") {
-    //         self.input = &self.input["true".len()..];
-    //         Ok(true)
-    //     } else if self.input.starts_with("false") {
-    //         self.input = &self.input["false".len()..];
-    //         Ok(false)
-    //     } else {
-    //         Err(Error::ExpectedBoolean)
-    //     }
-    // }
-
-    // Parse a group of decimal digits as an unsigned integer of type T.
-    //
-    // This implementation is a bit too lenient, for example `001` is not
-    // allowed in JSON. Also the various arithmetic operations can overflow and
-    // panic or return bogus data. But it is good enough for example code!
-    // fn parse_unsigned<T>(&mut self) -> Result<T>
-    // where
-    //     T: AddAssign<T> + MulAssign<T> + From<u8>,
-    // {
-    //     let mut int = match self.next_char()? {
-    //         ch @ '0'..='9' => T::from(ch as u8 - b'0'),
-    //         _ => {
-    //             return Err(Error::ExpectedInteger);
-    //         }
-    //     };
-    //     loop {
-    //         match self.input.chars().next() {
-    //             Some(ch @ '0'..='9') => {
-    //                 self.input = &self.input[1..];
-    //                 int *= T::from(10);
-    //                 int += T::from(ch as u8 - b'0');
-    //             }
-    //             _ => {
-    //                 return Ok(int);
-    //             }
-    //         }
-    //     }
-    // }
-
-    // Parse a possible minus sign followed by a group of decimal digits as a
-    // signed integer of type T.
-    // fn parse_signed<T>(&mut self) -> Result<T>
-    // where
-    //     T: Neg<Output = T> + AddAssign<T> + MulAssign<T> + From<i8>,
-    // {
-    //     // Optional minus sign, delegate to `parse_unsigned`, negate if negative.
-    //     unimplemented!()
-    // }
-
-    // Parse a string until the next '"' character.
-    //
-    // Makes no attempt to handle escape sequences. What did you expect? This is
-    // example code!
-    // fn parse_string(&mut self) -> Result<&'de str> {
-    //     if self.next_char()? != '"' {
-    //         return Err(Error::ExpectedString);
-    //     }
-    //     match self.input.find('"') {
-    //         Some(len) => {
-    //             let s = &self.input[..len];
-    //             self.input = &self.input[len + 1..];
-    //             Ok(s)
-    //         }
-    //         None => Err(Error::Eof),
-    //     }
-    // }
-
+impl<'de> RetroShareWireDeserializer<'de> {
     fn read_len(&mut self) -> Result<usize> {
         // len is always a u32
         const SIZE: usize = 4;
@@ -141,7 +61,7 @@ impl<'de> Deserializer<'de> {
     }
 }
 
-impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
+impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> {
     type Error = Error;
 
     // Look at the input data to decide what Serde data model type to
@@ -306,7 +226,9 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         let str_len = self.read_len()?;
         assert!(
             str_len <= self.input.len(),
-            "String lenght {} is longer than input data {}!", str_len, self.input.len()
+            "String lenght {} is longer than input data {}!",
+            str_len,
+            self.input.len()
         );
         let d: Vec<u8> = self.input.drain(0..str_len).collect();
         let s = String::from_utf8(d).unwrap();
@@ -320,13 +242,14 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         self.deserialize_str(visitor)
     }
 
-    // The `Serializer` implementation on the previous page serialized byte
-    // arrays as JSON arrays of bytes. Handle that representation here.
-    fn deserialize_bytes<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        unimplemented!()
+        // assume TLV!!
+        let len = NetworkEndian::read_u32(&self.input[2..6]) as usize; // skip len!
+        let bytes: Vec<u8> = self.input.drain(0..len).collect();
+        visitor.visit_bytes(&bytes)
     }
 
     fn deserialize_byte_buf<V>(self, _visitor: V) -> Result<V::Value>
@@ -549,6 +472,15 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         // self.deserialize_any(visitor)
         unimplemented!()
     }
+
+    // fn deserialize_tlv<V>(self, visitor: V) -> Result<V::Value>
+    // where
+    //     V: Visitor<'de>,
+    // {
+    //     // self.deserialize_any(visitor)
+    //     // unimplemented!()
+    //     let tag = visitor.visit_u16(v)
+    // }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -559,11 +491,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
 
 /// Dump reader that simply reads element after element with no size checks
 struct DumpReader<'a, 'de: 'a> {
-    de: &'a mut Deserializer<'de>,
+    de: &'a mut RetroShareWireDeserializer<'de>,
 }
 
 impl<'a, 'de> DumpReader<'a, 'de> {
-    fn new(de: &'a mut Deserializer<'de>) -> Self {
+    fn new(de: &'a mut RetroShareWireDeserializer<'de>) -> Self {
         DumpReader { de }
     }
 }
@@ -583,12 +515,12 @@ impl<'de, 'a> SeqAccess<'de> for DumpReader<'a, 'de> {
 
 /// Count based reader that reads a fixed length
 struct CountReader<'a, 'de: 'a> {
-    de: &'a mut Deserializer<'de>,
+    de: &'a mut RetroShareWireDeserializer<'de>,
     left: usize,
 }
 
 impl<'a, 'de> CountReader<'a, 'de> {
-    fn new(de: &'a mut Deserializer<'de>, left: usize) -> Self {
+    fn new(de: &'a mut RetroShareWireDeserializer<'de>, left: usize) -> Self {
         CountReader { de, left }
     }
 
@@ -645,13 +577,13 @@ impl<'de, 'a> MapAccess<'de> for CountReader<'a, 'de> {
 ////////////////////////////////////////////////////////////////////////////////
 
 pub struct LengthReader<'a, 'de: 'a> {
-    de: &'a mut Deserializer<'de>,
+    de: &'a mut RetroShareWireDeserializer<'de>,
     len_start: usize,
     len_to_read: usize,
 }
 
 impl<'a, 'de> LengthReader<'a, 'de> {
-    pub fn new(de: &'a mut Deserializer<'de>, len_to_read: usize) -> Self {
+    pub fn new(de: &'a mut RetroShareWireDeserializer<'de>, len_to_read: usize) -> Self {
         let len = de.input.len();
         LengthReader {
             de,
@@ -686,12 +618,12 @@ impl<'de, 'a> SeqAccess<'de> for LengthReader<'a, 'de> {
 
 #[allow(dead_code)]
 struct Enum<'a, 'de: 'a> {
-    de: &'a mut Deserializer<'de>,
+    de: &'a mut RetroShareWireDeserializer<'de>,
 }
 
 impl<'a, 'de> Enum<'a, 'de> {
     #[allow(dead_code)]
-    fn new(de: &'a mut Deserializer<'de>) -> Self {
+    fn new(de: &'a mut RetroShareWireDeserializer<'de>) -> Self {
         Enum { de }
     }
 }
@@ -767,3 +699,12 @@ impl<'de, 'a> VariantAccess<'de> for Enum<'a, 'de> {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
+// fn deserialize_tlv<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+// where
+//     D: Deserializer<'de>,
+//     T: Deserialize<'de>,
+// {
+//     let tag = u16::deserialize(deserializer).map_err(|err| crate::serde::Error::Message(String::from("failed to read tag")))?;
+//     let len = u32::deserialize(deserializer)?;
+// }

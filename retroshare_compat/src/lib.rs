@@ -1,17 +1,25 @@
+#[cfg(not(feature = "cookie-nom"))]
 use byteorder::{ByteOrder, NetworkEndian};
+#[cfg(feature = "cookie-nom")]
+use cookie_factory;
+#[cfg(feature = "cookie-nom")]
+use nom;
 
 pub mod serde;
 pub mod tlv;
 
 // pub mod bwctrl;
 pub mod basics;
-pub mod discovery;
+pub mod events;
 pub mod groups;
+pub mod gxs;
 pub mod keyring;
-pub mod service_info;
-pub mod turtle;
+pub mod peers;
+pub mod services;
+pub mod sqlite;
 
-// #[macro_use]
+// write
+#[cfg(not(feature = "cookie-nom"))]
 macro_rules! gen_writer {
     ($name:ident, $type:ty, $byte_width:expr) => {
         pub fn $name(data: &mut Vec<u8>, val: $type) {
@@ -22,12 +30,30 @@ macro_rules! gen_writer {
         }
     };
 }
-
+#[cfg(not(feature = "cookie-nom"))]
 gen_writer!(write_u16, u16, 2);
+#[cfg(not(feature = "cookie-nom"))]
 gen_writer!(write_u32, u32, 4);
+#[cfg(not(feature = "cookie-nom"))]
 gen_writer!(write_u64, u64, 8);
 
-// #[macro_use]
+#[cfg(feature = "cookie-nom")]
+macro_rules! gen_writer {
+    ($name:ident, $type:ty, $type2: ident, $byte_width:expr) => {
+        pub fn $name(data: &mut Vec<u8>, val: $type) {
+            cookie_factory::gen(cookie_factory::bytes::$type2(val), data).unwrap();
+        }
+    };
+}
+#[cfg(feature = "cookie-nom")]
+gen_writer!(write_u16, u16, be_u16, 2);
+#[cfg(feature = "cookie-nom")]
+gen_writer!(write_u32, u32, be_u32, 4);
+#[cfg(feature = "cookie-nom")]
+gen_writer!(write_u64, u64, be_u64, 8);
+
+// reader
+#[cfg(not(feature = "cookie-nom"))]
 macro_rules! gen_reader {
     ($name:ident, $type:ty, $byte_width:expr) => {
         pub fn $name(data: &mut Vec<u8>) -> $type {
@@ -37,66 +63,101 @@ macro_rules! gen_reader {
         }
     };
 }
-
+#[cfg(not(feature = "cookie-nom"))]
 gen_reader!(read_u16, u16, 2);
+#[cfg(not(feature = "cookie-nom"))]
 gen_reader!(read_u32, u32, 4);
+#[cfg(not(feature = "cookie-nom"))]
 gen_reader!(read_u64, u64, 8);
 
+#[cfg(feature = "cookie-nom")]
+macro_rules! gen_reader {
+    ($name:ident, $type:ty, $type2: ident, $byte_width:expr) => {
+        pub fn $name(data: &mut Vec<u8>) -> $type {
+            const SIZE: usize = $byte_width;
+
+            fn nom_read(data: &[u8]) -> nom::IResult<&[u8], $type> {
+                nom::number::complete::$type2(data)
+            }
+
+            nom_read(data.drain(0..SIZE).collect::<Vec<u8>>().as_slice())
+                .unwrap()
+                .1
+        }
+    };
+}
+
+#[cfg(feature = "cookie-nom")]
+gen_reader!(read_u16, u16, be_u16, 2);
+#[cfg(feature = "cookie-nom")]
+gen_reader!(read_u32, u32, be_u32, 4);
+#[cfg(feature = "cookie-nom")]
+gen_reader!(read_u64, u64, be_u64, 8);
+
+#[cfg(not(feature = "cookie-nom"))]
 pub fn read_string(data: &mut Vec<u8>) -> String {
     let str_len: usize = read_u32(data) as usize;
     String::from_utf8(data.drain(..str_len).collect()).unwrap()
 }
+#[cfg(not(feature = "cookie-nom"))]
 pub fn write_string(data: &mut Vec<u8>, val: &str) {
     write_u32(data, val.len() as u32); // len
     data.extend_from_slice(val.as_bytes());
 }
 
+#[cfg(feature = "cookie-nom")]
+pub fn write_string(data: &mut Vec<u8>, val: &str) {
+    let gen_len = cookie_factory::bytes::be_u32(val.len() as u32);
+    let gen_str = cookie_factory::combinator::string(val);
+    let gen = cookie_factory::sequence::pair(gen_len, gen_str);
+    cookie_factory::gen(gen, data).unwrap();
+}
+#[cfg(feature = "cookie-nom")]
+pub fn read_string(data: &mut Vec<u8>) -> String {
+    fn nom_read(data: &[u8]) -> nom::IResult<&[u8], String> {
+        let res: nom::IResult<&[u8], u32> = nom::number::complete::be_u32(data);
+        let (next, len) = res.unwrap();
+        nom::combinator::map_res(nom::bytes::complete::take(len), |b: &[u8]| {
+            String::from_utf8(b.to_vec())
+        })(next)
+    }
+    nom_read(data.as_slice()).unwrap().1
+}
+
 #[cfg(test)]
-mod tests_serde {
+mod tests_compat {
     use std::collections::HashMap;
 
     use crate::serde::{from_retroshare_wire, to_retroshare_wire};
     use ::serde::{Deserialize, Serialize};
-
-    // use serde_derive::Serialize;
-
-    // #[test]
-    // fn test1() {
-    //     #[derive(Serialize, Deserialize)]
-    //     pub struct SerialTest {
-    //         a: u8,
-    //         b: u16,
-    //         c: u32,
-    //     }
-    //     // let foo = SerialTest { a: 8, b: 16, c: 32 };
-    //     let foo = String::from("test");
-    //     let mut ser = to_retroshare_wire(&foo).expect("failed to serialize");
-    //     dbg!(&ser);
-    //     let de: String = from_retroshare_wire(&mut ser).expect("failed to deserialize");
-    //     assert_eq!(de, foo);
-    // }
 
     #[test]
     fn test_uints() {
         let u8 = 42 as u8;
         let mut ser = to_retroshare_wire(&u8).expect("failed to serialize");
         // println!("u8: {:02X?}", ser);
+        assert_eq!(&ser, &vec![42]);
         let de: u8 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
         assert_eq!(de, u8);
 
         let u16 = 42 as u16;
         let mut ser = to_retroshare_wire(&u16).expect("failed to serialize");
         // println!("u16: {:02X?}", ser);
+        assert_eq!(&ser, &vec![0, 42]);
         let de: u16 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
         assert_eq!(de, u16);
 
         let u32 = 42 as u32;
         let mut ser = to_retroshare_wire(&u32).expect("failed to serialize");
+        // println!("u32: {:02X?}", ser);
+        assert_eq!(&ser, &vec![0, 0, 0, 42]);
         let de: u32 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
         assert_eq!(de, u32);
 
         let u64 = 42 as u64;
         let mut ser = to_retroshare_wire(&u64).expect("failed to serialize");
+        // println!("u64: {:02X?}", ser);
+        assert_eq!(&ser, &vec![0, 0, 0, 0, 0, 0, 0, 42]);
         let de: u64 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
         assert_eq!(de, u64);
     }
@@ -105,22 +166,26 @@ mod tests_serde {
     fn test_ints() {
         let i8 = -42 as i8;
         let mut ser = to_retroshare_wire(&i8).expect("failed to serialize");
+        assert_eq!(&ser, &vec![0xD6]);
         let de: i8 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
         assert_eq!(de, i8);
 
         let i16 = -42 as i16;
         let mut ser = to_retroshare_wire(&i16).expect("failed to serialize");
+        assert_eq!(&ser, &vec![0xFF, 0xD6]);
         let de: i16 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
         assert_eq!(de, i16);
 
         let i32 = -42 as i32;
         let mut ser = to_retroshare_wire(&i32).expect("failed to serialize");
         // println!("i32: {:02X?}", ser);
+        assert_eq!(&ser, &vec![0xFF, 0xFF, 0xFF, 0xD6]);
         let de: i32 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
         assert_eq!(de, i32);
 
         let i64 = -42 as i64;
         let mut ser = to_retroshare_wire(&i64).expect("failed to serialize");
+        assert_eq!(&ser, &vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xD6]);
         let de: i64 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
         assert_eq!(de, i64);
     }

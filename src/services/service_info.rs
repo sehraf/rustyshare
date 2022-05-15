@@ -1,10 +1,13 @@
+use async_trait::async_trait;
+use log::{info, debug};
 use retroshare_compat::{
-    service_info::{read_rs_service_info, write_rs_service_info, RsServiceInfo},
+    services::service_info::{read_rs_service_info, write_rs_service_info, RsServiceInfo},
     tlv::TLV_HEADER_SIZE,
 };
 use std::collections::HashMap;
 
 use crate::{
+    handle_packet,
     parser::{
         headers::{Header, ServiceHeader, HEADER_SIZE},
         Packet,
@@ -13,15 +16,21 @@ use crate::{
     utils::simple_stats::StatsCollection,
 };
 
-// #[derive(Debug)]
-// struct RsServiceInfo {
-//     pub service_name: String,
-//     pub service_type: u32,
-//     pub version_major: u16,
-//     pub version_minor: u16,
-//     pub min_version_major: u16,
-//     pub min_version_minor: u16,
-// }
+impl From<&dyn Service> for RsServiceInfo {
+    fn from(service: &dyn Service) -> Self {
+        let info = service.get_service_info();
+        let service_number = (0x02 as u32) << 24 | (service.get_id() as u32) << 8;
+
+        RsServiceInfo {
+            m_service_name: info.0,
+            m_service_type: service_number,
+            m_version_major: info.1,
+            m_version_minor: info.2,
+            m_min_version_major: info.3,
+            m_min_version_minor: info.4,
+        }
+    }
+}
 
 impl From<&Box<dyn Service>> for RsServiceInfo {
     fn from(service: &Box<dyn Service>) -> Self {
@@ -54,36 +63,35 @@ impl ServiceInfo {
         header: &ServiceHeader,
         mut packet: Packet,
     ) -> HandlePacketResult {
-        if header.sub_type == SERVICE_INFO_SUB_TYPE {
-            let mut services = HashMap::new();
+        match header.sub_type {
+            SERVICE_INFO_SUB_TYPE => {
+                let mut services = HashMap::new();
 
-            read_rs_service_info(&mut packet.payload, &mut services);
+                read_rs_service_info(&mut packet.payload, &mut services);
 
-            for s in services {
-                println!("[service_info] num: {:#08X} -> {:?}", s.0, s.1);
+                for s in services {
+                    info!("[service_info] num: {:#08X} -> {:?}", s.0, s.1);
+                }
             }
-        } else {
-            panic!("ServiceInfo: sub type: {:02X} is unknown", header.sub_type);
+            sub_type => log::error!("[service_info] recevied unknown sub typ {sub_type}"),
         }
-        HandlePacketResult::Handled(None)
+        handle_packet!()
     }
 }
 
+#[async_trait]
 impl Service for ServiceInfo {
     fn get_id(&self) -> u16 {
         SERVICE_INFO_SERVICE
     }
 
-    fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
+    async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
+        debug!("handle_packet");
+
         self.handle_incoming(&packet.header.into(), packet)
     }
 
     fn tick(&mut self, _stats: &mut StatsCollection) -> Option<Vec<Packet>> {
-        // if !self.sent {
-        //     use crate::serial_stuff::gen_service_info;
-        //     self.sent = true;
-        //     gen_service_info(self.services.get_services());
-        // }
         None
     }
 

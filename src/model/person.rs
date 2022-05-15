@@ -1,30 +1,25 @@
 // use std::net::SocketAddr;
 use std::string::String;
-use std::sync::{Weak, RwLock, RwLockReadGuard};
+use std::sync::{RwLock, RwLockReadGuard, Arc};
 
-use location::Location;
-use sequoia_openpgp as openpgp;
 use retroshare_compat::basics::*;
+use sequoia_openpgp as openpgp;
 
-pub mod location;
-// use crate::error::RsError;
-// use crate::model::{DataCore, PeerCommand};
-// use location::Location;
+use crate::model::location::Location;
 
 pub struct Peer {
     name: String,
-    pgp: openpgp::Cert,
-
+    pgp_cert: openpgp::Cert,
     pgp_id: PgpId,
 
-    locations: RwLock<Vec<Weak<location::Location>>>,
+    locations: RwLock<Vec<Arc<Location>>>,
 }
 
 impl Peer {
     pub fn new(name: String, cert: openpgp::Cert, pgp_id: PgpId) -> Peer {
         Peer {
             name,
-            pgp: cert,
+            pgp_cert: cert,
             pgp_id,
             locations: RwLock::new(vec![]),
         }
@@ -39,14 +34,14 @@ impl Peer {
     }
 
     pub fn get_pgp(&self) -> &openpgp::Cert {
-        &self.pgp
+        &self.pgp_cert
     }
 
-    pub fn get_locations(&self) -> RwLockReadGuard<Vec<Weak<location::Location>>> {
+    pub fn get_locations(&self) -> RwLockReadGuard<Vec<Arc<Location>>> {
         self.locations.read().unwrap()
     }
 
-    pub fn add_location(&self, loc: Weak<Location>) {
+    pub fn add_location(&self, loc: Arc<Location>) {
         // will block!
         self.locations.write().unwrap().push(loc);
     }

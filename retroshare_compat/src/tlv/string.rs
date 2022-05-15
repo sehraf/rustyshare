@@ -1,0 +1,130 @@
+use std::{fmt, marker::PhantomData};
+
+use serde::{de::Visitor, ser::SerializeSeq, Deserializer, Serialize, Serializer};
+
+use crate::{read_u16, read_u32, write_u16, write_u32};
+
+use super::TLV_HEADER_SIZE;
+
+// pub fn read_string_typed(data: &mut Vec<u8>, tag: u16) -> String {
+//     let t = read_u16(data); // type
+//     let s = read_u32(data); // len
+//     assert_eq!(t, tag);
+//     assert!(s >= TLV_HEADER_SIZE as u32);
+//     let str_len = s as usize - TLV_HEADER_SIZE; // remove tlv header length
+//     String::from_utf8(data.drain(..str_len).collect()).unwrap()
+// }
+// pub fn write_string_typed(data: &mut Vec<u8>, val: &str, tag: u16) {
+//     write_u16(data, tag);
+//     write_u32(data, (val.len() + TLV_HEADER_SIZE) as u32); // len
+//     data.extend_from_slice(val.as_bytes());
+// }
+
+#[derive(Debug)]
+pub struct StringTagged<const TAG: u16>(String);
+
+// impl<const TAG: u16> From<String> for StringTagged<TAG> {
+//     fn from(s: String) -> Self {
+//         Self(s)
+//     }
+// }
+
+impl<const TAG: u16, T> From<T> for StringTagged<TAG>
+where
+    T: ToString,
+{
+    fn from(s: T) -> Self {
+        Self(s.to_string())
+    }
+}
+
+pub fn serialize<S, const TAG: u16>(
+    data: &StringTagged<TAG>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    // let mut s = serializer.serialize_seq(None)?;
+    // s.serialize_element(&TAG)?;
+    // s.serialize_element(&((data.0.len() + TLV_HEADER_SIZE) as u32))?;
+    // s.serialize_element(&data.0.as_bytes())?;
+    // s.end()
+    let mut ser = vec![];
+    write_u16(&mut ser, TAG);
+    write_u32(&mut ser, (data.0.len() + TLV_HEADER_SIZE) as u32);
+    ser.extend_from_slice(data.0.as_bytes());
+
+    serializer.serialize_bytes(ser.as_slice())
+}
+
+pub fn deserialize<'de, D, const TAG: u16>(deserializer: D) -> Result<StringTagged<TAG>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct TaggedStringVisitor<const TAG: u16>();
+
+    impl<'de, const TAG: u16> Visitor<'de> for TaggedStringVisitor<TAG> {
+        type Value = StringTagged<TAG>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "a tagged string")
+        }
+
+        fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            let tag = read_u16(&mut v[0..2].to_owned());
+            assert_eq!(tag, TAG);
+            let len = read_u32(&mut v[2..6].to_owned()) as usize;
+            assert!(len >= TLV_HEADER_SIZE);
+            assert!(len == v.len());
+            let s = String::from_utf8_lossy(&v[6..len]).to_string();
+
+            Ok(StringTagged(s))
+        }
+    }
+
+    deserializer.deserialize_bytes(TaggedStringVisitor())
+}
+
+#[cfg(test)]
+mod test {
+    use serde::{Deserialize, Serialize};
+
+    use crate::serde::{from_retroshare_wire, to_retroshare_wire};
+
+    use super::StringTagged;
+
+    #[test]
+    fn string_tagged() {
+        #[derive(Debug, Serialize, Deserialize)]
+        struct Dummy {
+            a: u16,
+            #[serde(with = "crate::tlv::string")]
+            tagged_string: StringTagged<0x1337>,
+            z: u16,
+        }
+
+        let test = Dummy {
+            a: 0xAAAA,
+            tagged_string: "test123".into(),
+            z: 0xBBBB,
+        };
+
+        let mut ser = to_retroshare_wire(&test).expect("failed to serialize");
+
+        let expected = vec![
+            0xAA, 0xAA, // a
+            0x13, 0x37, // tag
+            0x00, 0x00, 0x00, 0x0d, // len
+            0x74, 0x65, 0x73, 0x74, 0x31, 0x32, 0x33, // val
+            0xBB, 0xBB, // z
+        ];
+        assert_eq!(&ser, &expected);
+
+        let der: Dummy = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        assert_eq!(&der.tagged_string.0, &test.tagged_string.0);
+    }
+}

@@ -1,6 +1,10 @@
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
+use log::debug;
+
 use crate::{
+    handle_packet,
     parser::{
         headers::{Header, ServiceHeader},
         Packet,
@@ -34,18 +38,21 @@ impl Heartbeat {
         assert_eq!(header.sub_type, HEARTBEAT_SUB_SERVICE);
         assert_eq!(packet.payload.len(), 0);
 
-        // println!("received heart beat");
+        debug!("[heartbeat] received heart beat");
 
-        HandlePacketResult::Handled(None)
+        handle_packet!()
     }
 }
 
+#[async_trait]
 impl Service for Heartbeat {
     fn get_id(&self) -> u16 {
         HEARTBEAT_SERVICE
     }
 
-    fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
+    async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
+        debug!("handle_packet");
+
         self.handle_incoming(&packet.header.into(), packet)
     }
 

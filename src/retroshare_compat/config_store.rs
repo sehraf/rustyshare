@@ -1,4 +1,5 @@
 use byteorder::{ByteOrder, NetworkEndian};
+use log::warn;
 use openssl::{
     envelope,
     pkey::{self, PKey},
@@ -21,7 +22,7 @@ pub fn decryp_file(file: &path::Path, keys: SslKey) -> Result<Vec<u8>, std::io::
     let mut enc_file = match File::open(&file) {
         Ok(file) => file,
         Err(why) => {
-            println!("couldn't open {}: {}", file.display(), why);
+            warn!("couldn't open {}: {why}", file.display());
             return Err(why);
         }
     };
@@ -29,7 +30,7 @@ pub fn decryp_file(file: &path::Path, keys: SslKey) -> Result<Vec<u8>, std::io::
     let size = match enc_file.read_to_end(&mut data_enc) {
         Ok(s) => s,
         Err(why) => {
-            println!("failed to load ssl_{}: {}", file.display(), why);
+            warn!("failed to load ssl_{}: {why}", file.display());
             return Err(why);
         }
     };
@@ -55,7 +56,7 @@ pub fn decryp_file(file: &path::Path, keys: SslKey) -> Result<Vec<u8>, std::io::
     let size_dec = match env.update(&data_enc[offset..], &mut data_dec) {
         Ok(s) => s,
         Err(why) => {
-            println!("failed to decrypt ssl_{}: {}", file.display(), why);
+            warn!("failed to decrypt ssl_{}: {}", file.display(), why);
             return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
         }
     };

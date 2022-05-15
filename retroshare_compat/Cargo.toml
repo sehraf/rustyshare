@@ -2,13 +2,27 @@
 name = "retroshare_compat"
 version = "0.1.0"
 authors = ["sehraf <sehraf42@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
 [features]
+# default = ["cookie-nom"]
+default = []
+cookie-nom = ["cookie-factory", "nom"]
 
 [dependencies]
-sequoia-openpgp = "^0"
-# retroshare_compat_derive = { path = "proc_macro" }
+sequoia-openpgp = "1.8"
 serde = { version = "1.0", features = ["derive"] }
-byteorder = "^1"
-hex = "^0"
+serde_json = "1.0"
+hex = { version = "0.4", features = ["serde"] }
+log = "0.4"
+
+byteorder = { version = "1.4", optional = false }
+
+# Parsing
+cookie-factory = { version = "0.3", optional = true }
+nom = { version = "7.1", optional = true }
+
+# sqlite
+rusqlite = { version = "0.27", features = [
+    "bundled-sqlcipher", "serde_json"
+] } # TODO to bundled or not to bundled?

@@ -1,6 +1,9 @@
+use hex::FromHex;
+use rusqlite::types::FromSql;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    convert::{Infallible, TryInto},
     fmt,
     hash::{Hash, Hasher},
     ops::Deref,
@@ -39,7 +42,7 @@ const SHA256: usize = 32;
 
 macro_rules! make_generic_id_type {
     ($name:ident, $width:expr) => {
-        #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+        #[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
         pub struct $name(pub [u8; $width]);
 
         impl Default for $name {
@@ -50,7 +53,14 @@ macro_rules! make_generic_id_type {
 
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "{}: {}", stringify!($name), hex::encode(self.0))
+                write!(f, "{}", hex::encode(self.0))
+            }
+        }
+
+        // manually implement `Debug` to use hex representation
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{}", hex::encode(self.0))
             }
         }
 
@@ -67,10 +77,50 @@ macro_rules! make_generic_id_type {
                 &self.0
             }
         }
+
+        impl AsRef<[u8]> for $name {
+            fn as_ref(&self) -> &[u8] {
+                &self.0
+            }
+        }
+
+        impl From<Vec<u8>> for $name {
+            fn from(s: Vec<u8>) -> Self {
+                if s.len() != $width {
+                    println!("lenght mismatch! {s:?} is expected to be {} wide", $width);
+                    panic!();
+                }
+                Self(s.try_into().unwrap())
+            }
+        }
+
+        impl From<&str> for $name {
+            fn from(s: &str) -> Self {
+                hex::decode(s).expect("faild to decode").into()
+            }
+        }
+
+        // used by rusqlite
+        impl FromSql for $name {
+            fn column_result(
+                value: rusqlite::types::ValueRef<'_>,
+            ) -> rusqlite::types::FromSqlResult<Self> {
+                Ok(value.as_str()?.into())
+            }
+        }
+
+        impl FromHex for $name {
+            type Error = Infallible;
+
+            fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+                let s = String::from_utf8_lossy(hex.as_ref());
+                Ok(Self::from(s.as_ref()))
+            }
+        }
     };
 }
 
-make_generic_id_type!(PeerId, SSL_ID);
+make_generic_id_type!(SslId, SSL_ID);
 make_generic_id_type!(PgpId, PGP_ID);
 make_generic_id_type!(Sha1CheckSum, SHA1);
 make_generic_id_type!(Sha256CheckSum, SHA256);
@@ -83,6 +133,70 @@ make_generic_id_type!(GxsCircleId, CERT_SIGN);
 make_generic_id_type!(GxsTunnelId, SSL_ID);
 make_generic_id_type!(DistantChatPeerId, SSL_ID);
 make_generic_id_type!(NodeGroupId, CERT_SIGN);
+
+pub type PeerId = SslId;
+pub type FileHash = Sha1CheckSum;
+
+/// This macro generates wrapper structs for the WebUI
+/// For example, `SslId` is transported as a map `{"sslId: <...>}"}`
+macro_rules! make_type_wrapped {
+    ($name:ident, $wrapped:ident) => {
+        #[allow(non_snake_case)]
+        #[derive(Debug, Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase")]
+        pub struct $name {
+            #[serde(with = "hex")]
+            $wrapped: $wrapped,
+        }
+
+        impl Deref for $name {
+            type Target = $wrapped;
+
+            fn deref(&self) -> &Self::Target {
+                &self.$wrapped
+            }
+        }
+
+        impl From<$wrapped> for $name {
+            fn from(x: $wrapped) -> Self {
+                Self { $wrapped: x }
+            }
+        }
+    };
+}
+
+/// This macro generates hex'ed structs for the WebUI
+macro_rules! make_type_hex {
+    ($name:ident, $wrapped:ident) => {
+        #[derive(Debug, Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase")]
+        pub struct $name(#[serde(with = "hex")] $wrapped);
+
+        impl Deref for $name {
+            type Target = $wrapped;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl From<$wrapped> for $name {
+            fn from(x: $wrapped) -> Self {
+                Self(x)
+            }
+        }
+    };
+}
+
+macro_rules! make_webui_types {
+    ($name:ident, $hex:ident, $wrapped:ident) => {
+        make_type_hex!($hex, $name);
+        make_type_wrapped!($wrapped, $name);
+    };
+}
+
+make_webui_types!(SslId, SslIdHex, SslIdWrapped);
+make_webui_types!(PgpId, PgpIdHex, PgpIdWrapped);
 
 // struct PeerBandwidthLimits : RsSerializable
 // {

@@ -1,32 +1,33 @@
+#![feature(proc_macro_hygiene, decl_macro)]
+
+use controller::CoreController;
+use flexi_logger::{LevelFilter, LogSpecification};
+use log::warn;
 use std::{
-    collections::HashMap,
     convert::TryInto,
     fs::File,
     io::{self, Read},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
-    sync::mpsc,
-    thread::sleep,
-    time::{Duration, Instant},
+    sync::Arc,
 };
+use tokio::{self, select};
 
 use ::retroshare_compat::basics::*;
 
+mod controller;
 mod error;
 mod model;
 mod parser;
 mod retroshare_compat;
 mod serial_stuff;
 mod services;
-mod transport;
+mod transport_ng;
 mod utils;
+mod webui;
 
 use ::retroshare_compat::keyring::Keyring;
-// use error::RsError;
 use io::Write;
-use model::{PeerCommand, PeerThreadCommand};
-// use native_tls::Certificate;
-use openpgp::Cert;
 use openssl::x509::X509;
 use sequoia_openpgp as openpgp;
 use serial_stuff::load_peers;
@@ -40,25 +41,18 @@ fn read_location_cert(path: &Path) -> Result<X509, io::Error> {
     let mut user_cert = Vec::new();
     file.read_to_end(&mut user_cert)?;
 
-    // return Ok(openssl::x509::X509::from_pem(&user_cert)?);
-    // return Ok(Certificate::from_pem(&user_cert)?);
     Ok(
         openssl::x509::X509::from_pem(&user_cert)?, // , Certificate::from_pem(&user_cert).unwrap(),
     )
 }
 
 #[allow(unused_braces)]
-fn select_location(base_dir: &Path, keys: &Keyring) -> Option<(String, X509, Cert)> {
-    // fn select_location(base_dir: &Path, keys: &Keyring) -> Option<(String, Certificate, Cert)> {
+fn select_location(base_dir: &Path, keys: &Keyring) -> Option<(String, X509, openpgp::cert::Cert)> {
     const LOC_FOLDER_PREFIX: &str = "LOC06_";
     const LOC_FOLDER_PREFIX_HIDDEN: &str = "HID06_";
 
     // build list with valid options
-    let mut locations: Vec<(
-        String,
-        X509, // , Certificate
-        Cert,
-    )> = vec![];
+    let mut locations = vec![];
     // let mut locations: Vec<(String, Certificate, Cert)> = vec![];
     for dir in std::fs::read_dir(base_dir).expect("failed to list folder") {
         // get folder (name)
@@ -100,12 +94,12 @@ fn select_location(base_dir: &Path, keys: &Keyring) -> Option<(String, X509, Cer
             // TODO Add error handling
             continue;
         }
-        let key = key.unwrap();
+        let key = key.unwrap().to_owned();
 
         // TODO
         // figure out the actual location name
 
-        locations.push((dir_name, cert, key.clone()));
+        locations.push((dir_name, cert, key));
     }
 
     // ask user
@@ -123,32 +117,66 @@ fn select_location(base_dir: &Path, keys: &Keyring) -> Option<(String, X509, Cer
     let mut buffer = String::new();
     match io::stdin().read_line(&mut buffer) {
         Ok(len) => {
-            assert!(len < 4); // 1-99 should be enough
-            buffer.pop();
+            if len >= 5 {
+                return None;
+            }
+
+            let buffer = buffer.trim();
 
             // parse number
-            let num_selected = buffer.parse::<usize>().expect("failed to parse input!");
+            let num_selected = buffer.parse::<usize>().ok()?;
             assert!(num > num_selected);
 
             // get key
             let loc = &locations[num_selected - 1];
-            return Some(loc.clone());
+            return Some(loc.to_owned());
         }
-        Err(_) => {}
+        Err(err) => warn!("failed {err}"),
     }
     None
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
+    // std::env::set_var(
+    //     "RUST_LOG",
+    //     "debug,rustyshare::services::heartbeat=warn,rustyshare::services::bwctrl=warn,rustyshare::services::turtle=trace",
+    // );
+    // pretty_env_logger::init();
+    // env_logger::init();
+    let mut builder = LogSpecification::builder();
+    builder
+        // .module("rustyshare::controller::connected_peer", LevelFilter::Debug)
+        // .module("rustyshare::controller", LevelFilter::Trace)
+        .module("rustyshare::services::heartbeat", LevelFilter::Warn)
+        .module("rustyshare::services::bwctrl", LevelFilter::Warn)
+        .module("rustyshare::services::chat", LevelFilter::Trace)
+        // .module("rustyshare::services::turtle", LevelFilter::Trace)
+        // .module("sequoia_openpgp", LevelFilter::Trace)
+        // .module("actix", LevelFilter::Trace)
+        .module("actix_web::types::json", LevelFilter::Trace)
+        .default(LevelFilter::Debug);
+    flexi_logger::Logger::with(builder.finalize())
+        // .log_to_file(FileSpec::default())
+        // .print_message()
+        // .write_mode(WriteMode::BufferAndFlush)
+        // .duplicate_to_stderr(Duplicate::All)
+        // .log_to_stderr()
+        .start()
+        .expect("failed to start logger");
+
     let rs_base_dir = retroshare_compat::get_base_dir();
 
     // load keyring
     let mut keys = Keyring::new();
     keys.parse(&rs_base_dir);
 
-    let (loc, localtion_path, ssl_key) = loop {
+    let (loc, localtion_path, ssl_key, gxs) = loop {
         // pick location
-        let loc = select_location(&rs_base_dir, &keys).expect("no location selected");
+        let loc = match select_location(&rs_base_dir, &keys) {
+            Some(a) => a,
+            None => continue,
+        };
         let localtion_path = rs_base_dir.join(&loc.0);
 
         println!("");
@@ -160,12 +188,12 @@ fn main() {
             &localtion_path,
             &password,
         ) {
-            Ok(key) => {
+            Ok((key, gxs)) => {
                 password.clear();
-                break (loc, localtion_path, key);
+                break (loc, localtion_path, key, gxs);
             }
             Err(why) => {
-                println!("{}", why);
+                warn!("{}", why);
             }
         }
         password.clear();
@@ -195,11 +223,11 @@ fn main() {
     // build own id
     let hex = hex::decode(&loc.0[6..]).expect("Decoding failed");
     let peer_id: [u8; 16] = hex.try_into().expect("failed to convert!"); // SSL_ID
-    let peer_id = PeerId(peer_id);
+    let peer_id = Arc::new(SslId(peer_id));
 
     // init data core
-    let mut core = model::DataCore::new(ssl_key, friends, &peer_id);
-    let own_ips = core.get_own_location().get_ips().0.clone(); // TODO
+    let data_core = model::DataCore::new(ssl_key, friends, peer_id, gxs);
+    let own_ips = data_core.get_own_location().get_ips().0.clone(); // TODO
 
     // setup listener
     let port = own_ips
@@ -214,48 +242,75 @@ fn main() {
         .addr
         .0
         .port();
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
-    let (listener_tx, listener_rx) = mpsc::channel();
-    let listener = transport::listener::Listener::new(addr, core.get_tx(), listener_rx).unwrap();
+    let _addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
 
-    let mut stats: utils::simple_stats::StatsCollection = (Instant::now(), HashMap::new());
+    // setup webui
+    #[cfg(feature = "webui_actix")]
+    let web = webui::actix::run_actix(data_core.clone());
 
-    // sleep time
-    let mut now: Instant;
-    const TARGET_INTERVAL: Duration = Duration::from_millis(25);
+    #[cfg(feature = "webui_rocket")]
+    webui::rocket::start_rocket(data_core.clone());
 
-    // stats counter
-    let mut counter = 0;
-    const INTERVAL: Duration = Duration::from_secs(2); // every 2 seconds
-    const MAX_COUNTER: u32 = (INTERVAL.as_micros() / TARGET_INTERVAL.as_micros()) as u32;
+    // enter main loop
+    let mut core = CoreController::new(data_core).await;
 
-    // tick forever
-    while core.tick(&mut stats) {
-        now = Instant::now();
-
-        counter += 1;
-        if counter > MAX_COUNTER {
-            counter = 0;
-
-            utils::simple_stats::print(&stats);
-            stats.0 = Instant::now();
-            stats.1.clear();
+    #[cfg(feature = "webui_actix")]
+    {
+        let fut = core.run();
+        select! {
+            _ = web => {},
+            _ = fut => {},
         }
-
-        // timing stuff
-        // main loop should run every TARGET_INTERVAL
-        let loop_duration = Instant::now() - now;
-        if loop_duration >= TARGET_INTERVAL {
-            continue;
-        }
-        let sleep_duration = TARGET_INTERVAL - loop_duration;
-        // println!("main loop execution took {}us sleeping for {}us", &loop_duration.as_millis(), &sleep_duration.as_millis());
-        sleep(sleep_duration);
     }
+    #[cfg(not(feature = "webui_actix"))]
+    core.run().await;
 
-    // shutdown listener
-    listener_tx
-        .send(PeerCommand::Thread(PeerThreadCommand::Stop))
-        .expect("failed to communicate with listener");
-    listener.join().unwrap();
+    // #######################
+    // old code
+    // #######################
+
+    // let (listener_tx, listener_rx) = mpsc::channel();
+    // let listener = transport::listener::Listener::new(addr, core.get_tx(), listener_rx).unwrap();
+
+    // let mut stats: utils::simple_stats::StatsCollection = (Instant::now(), HashMap::new());
+
+    // // sleep time
+    // let mut now: Instant;
+    // const TARGET_INTERVAL: Duration = Duration::from_millis(25);
+
+    // // stats counter
+    // let mut counter = 0;
+    // const INTERVAL: Duration = Duration::from_secs(2); // every 2 seconds
+    // const MAX_COUNTER: u32 = (INTERVAL.as_micros() / TARGET_INTERVAL.as_micros()) as u32;
+
+    // // tick forever
+    // while core.tick(&mut stats) {
+    //     now = Instant::now();
+
+    //     counter += 1;
+    //     if counter > MAX_COUNTER {
+    //         counter = 0;
+
+    //         utils::simple_stats::print(&stats);
+    //         stats.0 = Instant::now();
+    //         stats.1.clear();
+    //     }
+
+    //     // timing stuff
+    //     // main loop should run every TARGET_INTERVAL
+    //     let loop_duration = Instant::now() - now;
+    //     if loop_duration >= TARGET_INTERVAL {
+    //         continue;
+    //     }
+    //     let sleep_duration = TARGET_INTERVAL - loop_duration;
+    //     // println!("main loop execution took {}us sleeping for {}us", &loop_duration.as_millis(), &sleep_duration.as_millis());
+    //     sleep(sleep_duration);
+    // }
+    // core.run().await;
+
+    // // shutdown listener
+    // listener_tx
+    //     .send(PeerCommand::Thread(PeerThreadCommand::Stop))
+    //     .expect("failed to communicate with listener");
+    // listener.join().unwrap();
 }

@@ -9,6 +9,7 @@ pub enum Error {
     Eof,
     TrailingBytes,
     UnknownSize,
+    WrongTag,
 }
 
 impl ser::Error for Error {
@@ -28,6 +29,7 @@ impl Display for Error {
         match self {
             Error::Message(msg) => write!(f, "{}", msg),
             Error::Eof => f.write_str("unexpected end of input"),
+            Error::WrongTag => f.write_str("tag mismatch"),
             /* and so forth */
             _ => unimplemented!(),
         }
