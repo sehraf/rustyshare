@@ -1,7 +1,6 @@
 use ::serde::{Deserialize, Serialize};
-use log::warn;
 
-use crate::{read_u32, serde::from_retroshare_wire, tlv::read_string_typed};
+use crate::tlv::string::StringTagged;
 
 pub type ChatLobbyId = u64;
 pub type ChatLobbyMsgId = u64;
@@ -35,6 +34,7 @@ pub type ChatLobbyNickName = String;
 // };
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(unused)]
 pub struct ChatMsg {
     chat_flags: u32,
     #[serde(rename(serialize = "ser_name"))]
@@ -136,8 +136,8 @@ pub struct ChatLobbyEventItem {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VisibleChatLobbyInfo {
     pub id: ChatLobbyId,
-    pub name: String,
-    pub topic: String,
+    pub name: StringTagged<0x0051>,
+    pub topic: StringTagged<0x0051>,
     pub count: u32,
     // pub flags: CharLobbyFlags, // FIXME
     pub flags: u32,
@@ -157,31 +157,6 @@ pub struct VisibleChatLobbyInfo {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatLobbyListItem {
     pub lobbies: Vec<VisibleChatLobbyInfo>,
-}
-
-pub fn read_rs_chat_lobby_list_item(payload: &mut Vec<u8>) -> ChatLobbyListItem {
-    let num_entries = read_u32(payload);
-
-    warn!("{payload:?}");
-
-    let mut lobbies = vec![];
-    for _ in 0..num_entries {
-        let id: ChatLobbyId = from_retroshare_wire(payload).expect("failed to deserialize");
-        let name: String = read_string_typed(payload, 0x0051);
-        let topic: String = read_string_typed(payload, 0x0051);
-        let count: u32 = from_retroshare_wire(payload).expect("failed to deserialize");
-        let flags: u32 = from_retroshare_wire(payload).expect("failed to deserialize");
-
-        lobbies.push(VisibleChatLobbyInfo {
-            id,
-            name,
-            topic,
-            count,
-            flags,
-        });
-    }
-
-    ChatLobbyListItem { lobbies }
 }
 
 // class RsChatLobbyUnsubscribeItem: public RsChatItem

@@ -5,9 +5,7 @@ authors = ["sehraf <sehraf42@gmail.com>"]
 edition = "2021"
 
 [features]
-# default = ["cookie-nom"]
 default = []
-cookie-nom = ["cookie-factory", "nom"]
 
 [dependencies]
 sequoia-openpgp = "1.8"
@@ -17,10 +15,6 @@ hex = { version = "0.4", features = ["serde"] }
 log = "0.4"
 
 byteorder = { version = "1.4", optional = false }
-
-# Parsing
-cookie-factory = { version = "0.3", optional = true }
-nom = { version = "7.1", optional = true }
 
 # sqlite
 rusqlite = { version = "0.27", features = [

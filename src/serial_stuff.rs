@@ -6,10 +6,7 @@ use retroshare_compat::{
     keyring::Keyring,
     read_u16, read_u32,
     serde::from_retroshare_wire,
-    tlv::{
-        read_string_typed, read_tlv_ip_addr, read_tlv_ip_addr_set, TlvIpAddressInfo,
-        TLV_HEADER_SIZE,
-    },
+    tlv::{read_tlv_ip_addr, read_tlv_ip_addr_set, TlvIpAddressInfo, TLV_HEADER_SIZE},
 };
 use std::{collections::HashSet, sync::Arc};
 
@@ -20,6 +17,22 @@ use crate::{
         headers::{Header, HEADER_SIZE},
     },
 };
+
+// typed string
+
+fn read_string_typed(data: &mut Vec<u8>, tag: u16) -> String {
+    let t = read_u16(data); // type
+    let s = read_u32(data); // len
+    assert_eq!(t, tag);
+    assert!(s >= TLV_HEADER_SIZE as u32);
+    let str_len = s as usize - TLV_HEADER_SIZE; // remove tlv header length
+    String::from_utf8(data.drain(..str_len).collect()).unwrap()
+}
+// fn write_string_typed(data: &mut Vec<u8>, val: &str, tag: u16) {
+//     retroshare_compat::write_u16(data, tag);
+//     retroshare_compat::write_u32(data, (val.len() + TLV_HEADER_SIZE) as u32); // len
+//     data.extend_from_slice(val.as_bytes());
+// }
 
 pub fn read_peer_net_item(
     data: &mut Vec<u8>,

@@ -4,7 +4,7 @@ use std::fmt;
 use crate::{
     basics::*,
     serde::{from_retroshare_wire, to_retroshare_wire},
-    tlv::*,
+    tlv::{string::StringTagged, *},
     *,
 };
 
@@ -228,8 +228,8 @@ pub struct DiscContactItem {
     pub ssl_id: SslId,
 
     // COMMON
-    pub location: String, // TLV String!
-    pub version: String,  // TLV String!
+    pub location: StringTagged<0x005c>, // TLV String!
+    pub version: StringTagged<0x005f>,  // TLV String!
 
     pub net_mode: u32, /* Mandatory */
     pub vs_disc: u16,  /* Mandatory */
@@ -238,7 +238,7 @@ pub struct DiscContactItem {
 
     pub is_hidden: bool, /* not serialised */
     // HIDDEN.
-    pub hidden_addr: String, // TLV String!
+    pub hidden_addr: StringTagged<0x0084>, // TLV String!
     pub hidden_port: u16,
 
     // STANDARD.
@@ -250,7 +250,7 @@ pub struct DiscContactItem {
     pub local_addr_v6: TlvIpAddress, /* Mandatory */
     pub ext_addr_v6: TlvIpAddress,   /* Mandatory */
     // current_connect_address is serialized here!
-    pub dyndns: String, // TLV String!
+    pub dyndns: StringTagged<0x0083>, // TLV String!
 
     pub local_addr_list: TlvIpAddrSet,
     pub ext_addr_list: TlvIpAddrSet,
@@ -295,8 +295,8 @@ pub fn read_rs_disc_contact_item(payload: &mut Vec<u8>) -> DiscContactItem {
 
     item.pgp_id = from_retroshare_wire(payload).unwrap();
     item.ssl_id = from_retroshare_wire(payload).unwrap();
-    item.location = read_string_typed(payload, 0x005c);
-    item.version = read_string_typed(payload, 0x005f);
+    item.location = from_retroshare_wire(payload).unwrap();
+    item.version = from_retroshare_wire(payload).unwrap();
 
     item.net_mode = from_retroshare_wire(payload).unwrap();
     item.vs_disc = from_retroshare_wire(payload).unwrap();
@@ -306,7 +306,7 @@ pub fn read_rs_disc_contact_item(payload: &mut Vec<u8>) -> DiscContactItem {
     // check is the entry is for a hidden node or clearnet
     let mut copy = payload[..2].to_vec();
     if read_u16(&mut copy) == 0x0084 {
-        item.hidden_addr = read_string_typed(payload, 0x0084); // TLV_TYPE_STR_DOMADDR   = 0x0084;
+        item.hidden_addr = from_retroshare_wire(payload).unwrap();
         item.hidden_port = from_retroshare_wire(payload).unwrap();
     } else {
         item.local_addr_v4 = read_tlv_ip_addr(payload).into();
@@ -314,7 +314,7 @@ pub fn read_rs_disc_contact_item(payload: &mut Vec<u8>) -> DiscContactItem {
         item.local_addr_v6 = read_tlv_ip_addr(payload).into();
         item.ext_addr_v6 = read_tlv_ip_addr(payload).into();
         item.current_connect_address = read_tlv_ip_addr(payload).into();
-        item.dyndns = read_string_typed(payload, 0x0083);
+        item.dyndns = from_retroshare_wire(payload).unwrap();
 
         item.local_addr_list = read_tlv_ip_addr_set(payload);
         item.ext_addr_list = read_tlv_ip_addr_set(payload);
@@ -356,8 +356,8 @@ pub fn write_rs_disc_contact_item(payload: &mut Vec<u8>, item: &DiscContactItem)
     //    }
     payload.append(&mut to_retroshare_wire(&item.pgp_id).expect("failed to serialize"));
     payload.append(&mut to_retroshare_wire(&item.ssl_id).expect("failed to serialize"));
-    write_string_typed(payload, &item.location, 0x005c);
-    write_string_typed(payload, &item.version, 0x005f);
+    payload.append(&mut to_retroshare_wire(&item.location).expect("failed to serialize"));
+    payload.append(&mut to_retroshare_wire(&item.version).expect("failed to serialize"));
 
     payload.append(&mut to_retroshare_wire(&item.net_mode).expect("failed to serialize"));
     payload.append(&mut to_retroshare_wire(&item.vs_disc).expect("failed to serialize"));
@@ -372,7 +372,7 @@ pub fn write_rs_disc_contact_item(payload: &mut Vec<u8>, item: &DiscContactItem)
     write_tlv_ip_addr(payload, &item.ext_addr_v6.0);
     write_tlv_ip_addr(payload, &item.current_connect_address.0);
 
-    write_string_typed(payload, &item.dyndns, 0x0083);
+    payload.append(&mut to_retroshare_wire(&item.dyndns).expect("failed to serialize"));
 
     write_tlv_ip_addr_set(payload, &item.local_addr_list);
     write_tlv_ip_addr_set(payload, &item.ext_addr_list);

@@ -1,129 +1,107 @@
-use serde::{
-    de::{self, SeqAccess, Visitor},
-    ser::SerializeStruct,
-    Deserialize, Serialize,
+use std::{fmt, marker::PhantomData};
+
+use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
+
+use crate::{
+    read_u16, read_u32,
+    serde::{from_retroshare_wire, to_retroshare_wire},
+    write_u16, write_u32,
 };
 
-use crate::serde::{from_retroshare_wire, to_retroshare_wire};
+use super::TLV_HEADER_SIZE;
 
-pub struct Tlv<T, const ID: u16> {
-    inner: T,
-}
+pub struct Tlv<const TAG: u16, T>(T);
 
-impl<T: Serialize, const ID: u16> Serialize for Tlv<T, ID> {
+impl<const TAG: u16, T> Serialize for Tlv<TAG, T>
+where
+    T: Serialize,
+{
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: Serializer,
     {
-        let inner = to_retroshare_wire(&self.inner).unwrap();
-        let _len = inner.len() as u32;
+        let bytes = to_retroshare_wire(&self.0).expect("failed to serialize");
 
-        let mut state = serializer.serialize_struct("Tlv", 2)?;
-        state.serialize_field("tag", &ID)?;
-        // state.serialize_field("len", &len)?;
-        state.serialize_field("val", &inner)?;
+        let mut ser = vec![];
+        write_u16(&mut ser, TAG);
+        write_u32(&mut ser, (bytes.len() + TLV_HEADER_SIZE) as u32);
+        ser.extend_from_slice(&bytes);
 
-        state.end()
+        serializer.serialize_bytes(ser.as_slice())
     }
 }
 
-// struct TlvVisitorU16;
+impl<'de, const TAG: u16, T> Deserialize<'de> for Tlv<TAG, T>
+where
+    T: Deserialize<'de> + Copy + Clone,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct TlvVisitor<const TAG: u16, T>(PhantomData<T>);
 
-// impl<'de> Visitor<'de> for TlvVisitorU16 {
-//     type Value = u16;
+        impl<'de, const TAG: u16, T> Visitor<'de> for TlvVisitor<TAG, T>
+        where
+            T: Deserialize<'de> + Copy + Clone,
+        {
+            type Value = Tlv<TAG, T>;
 
-//     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-//         formatter.write_str("u16")
-//     }
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "TLV")
+            }
 
-//     fn visit_u16<E>(self, v: u16) -> Result<Self::Value, E>
-//     where
-//         E: serde::de::Error,
-//     {
-//         Ok(v)
-//     }
-// }
+            // fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            // where
+            //     E: serde::de::Error,
+            // {
+            //     let tag = read_u16(&mut v[0..2].to_owned());
+            //     assert_eq!(tag, TAG);
+            //     let len = read_u32(&mut v[2..6].to_owned()) as usize;
+            //     assert!(len >= TLV_HEADER_SIZE);
+            //     assert!(len == v.len());
 
-// struct TlvVisitorU32;
+            //     let mut bytes = v[6..len].into();
+            //     let s: T = from_retroshare_wire(&mut bytes).expect("failed to deserialize");
 
-// impl<'de> Visitor<'de> for TlvVisitorU32 {
-//     type Value = u32;
+            //     Ok(Tlv(s))
+            // }
 
-//     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-//         formatter.write_str("u32")
-//     }
+            // fn visit_byte_buf<E>(self, mut v: Vec<u8>) -> Result<Self::Value, E>
+            // where
+            //     E: serde::de::Error,
+            // {
+            //     let tag = read_u16(&mut v);
+            //     assert_eq!(tag, TAG);
+            //     let len = read_u32(&mut v) as usize;
+            //     assert!(len >= TLV_HEADER_SIZE);
+            //     assert!(len == v.len());
 
-//     fn visit_u32<E>(self, v: u32) -> Result<Self::Value, E>
-//     where
-//         E: serde::de::Error,
-//     {
-//         Ok(v)
-//     }
-// }
+            //     let s: T = from_retroshare_wire(&mut v).expect("failed to deserialize");
 
-// struct TlvVisitorVec;
+            //     Ok(Tlv(s))
+            // }
 
-// impl<'de> Visitor<'de> for TlvVisitorVec {
-//     type Value = Vec<u8>;
+            // fn visit_borrowed_bytes<E>(self, v: &'de [u8]) -> Result<Self::Value, E>
+            // where
+            //     E: serde::de::Error,
+            // {
+            //     let tag = read_u16(&mut v[0..2].to_owned());
+            //     assert_eq!(tag, TAG);
+            //     let len = read_u32(&mut v[2..6].to_owned()) as usize;
+            //     assert!(len >= TLV_HEADER_SIZE);
+            //     assert!(len == v.len());
 
-//     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-//         formatter.write_str("Vec<u8>")
-//     }
+            //     // let mut bytes = v[6..len].into();
+            //     let s: T = from_retroshare_wire(v).expect("failed to deserialize");
 
-//     fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
-//     where
-//         E: serde::de::Error,
-//     {
-//         Ok(Vec::from(v))
-//     }
-// }
+            //     Ok(Tlv(s))
+            // }
+        }
 
-// struct TlvVisitor<T, ID>;
-
-// impl<'de, T, const ID: u16> Visitor<'de> for TlvVisitor<T, ID> {
-//     type Value = Tlv<T, ID>;
-
-//     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-//         formatter.write_str("TLV")
-//     }
-
-//     fn visit_seq<V>(self, mut seq: V) -> Result<Self::Value, V::Error>
-//     where
-//         V: SeqAccess<'de>,
-//     {
-//         let tag = seq
-//             .next_element()?
-//             .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-//         let len = seq
-//             .next_element()?
-//             .ok_or_else(|| de::Error::invalid_length(1, &self))?;
-//         let val = seq
-//             .next_element()?
-//             .ok_or_else(|| de::Error::invalid_length(1, &self))?;
-
-//         let inner: T = from_retroshare_wire(&mut val).unwrap();
-
-//         Ok(Self::Value { inner })
-//     }
-// }
-
-// impl<'de, T: Serialize + Deserialize<'de>, const ID: u16> Deserialize<'de> for Tlv<T, ID> {
-//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-//     where
-//         D: serde::Deserializer<'de>,
-//     {
-//         // let tag = deserializer.deserialize_u16(TlvVisitorU16)?;
-//         // let len = deserializer.deserialize_u32(TlvVisitorU32)?;
-//         // let mut val = deserializer.deserialize_bytes(TlvVisitorVec)?;
-
-//         // let inner: T = from_retroshare_wire(&mut val).unwrap();
-
-//         // Ok(Self { inner })
-
-//         const FIELDS: &'static [&'static str] = &["tag", "len", "val"];
-//         let a = deserializer.deserialize_struct("tlv", FIELDS, TlvVisitor)?;
-//     }
-// }
+        deserializer.deserialize_byte_buf(TlvVisitor(PhantomData))
+    }
+}
 
 #[cfg(test)]
 mod tests_tlv {
@@ -135,7 +113,7 @@ mod tests_tlv {
 
     macro_rules! do_it {
         ($tag:expr, $val:expr, $expected:expr) => {
-            let orig: Tlv<_, $tag> = Tlv { inner: $val };
+            let orig: Tlv<_, $tag> = Tlv($val);
             let ser = to_retroshare_wire(&orig).unwrap();
             println!("{ser:?}");
             assert_eq!(ser, $expected);
@@ -144,7 +122,7 @@ mod tests_tlv {
 
     macro_rules! do_it_not {
         ($tag:expr, $val:expr, $expected:expr) => {
-            let orig: Tlv<_, $tag> = Tlv { inner: $val };
+            let orig: Tlv<_, $tag> = Tlv($val);
             let ser = to_retroshare_wire(&orig).unwrap();
             println!("{ser:?}");
             assert_ne!(ser, $expected);

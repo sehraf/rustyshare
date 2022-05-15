@@ -19,7 +19,6 @@ pub mod services;
 pub mod sqlite;
 
 // write
-#[cfg(not(feature = "cookie-nom"))]
 macro_rules! gen_writer {
     ($name:ident, $type:ty, $byte_width:expr) => {
         pub fn $name(data: &mut Vec<u8>, val: $type) {
@@ -30,30 +29,11 @@ macro_rules! gen_writer {
         }
     };
 }
-#[cfg(not(feature = "cookie-nom"))]
 gen_writer!(write_u16, u16, 2);
-#[cfg(not(feature = "cookie-nom"))]
 gen_writer!(write_u32, u32, 4);
-#[cfg(not(feature = "cookie-nom"))]
 gen_writer!(write_u64, u64, 8);
 
-#[cfg(feature = "cookie-nom")]
-macro_rules! gen_writer {
-    ($name:ident, $type:ty, $type2: ident, $byte_width:expr) => {
-        pub fn $name(data: &mut Vec<u8>, val: $type) {
-            cookie_factory::gen(cookie_factory::bytes::$type2(val), data).unwrap();
-        }
-    };
-}
-#[cfg(feature = "cookie-nom")]
-gen_writer!(write_u16, u16, be_u16, 2);
-#[cfg(feature = "cookie-nom")]
-gen_writer!(write_u32, u32, be_u32, 4);
-#[cfg(feature = "cookie-nom")]
-gen_writer!(write_u64, u64, be_u64, 8);
-
 // reader
-#[cfg(not(feature = "cookie-nom"))]
 macro_rules! gen_reader {
     ($name:ident, $type:ty, $byte_width:expr) => {
         pub fn $name(data: &mut Vec<u8>) -> $type {
@@ -63,66 +43,18 @@ macro_rules! gen_reader {
         }
     };
 }
-#[cfg(not(feature = "cookie-nom"))]
 gen_reader!(read_u16, u16, 2);
-#[cfg(not(feature = "cookie-nom"))]
 gen_reader!(read_u32, u32, 4);
-#[cfg(not(feature = "cookie-nom"))]
 gen_reader!(read_u64, u64, 8);
 
-#[cfg(feature = "cookie-nom")]
-macro_rules! gen_reader {
-    ($name:ident, $type:ty, $type2: ident, $byte_width:expr) => {
-        pub fn $name(data: &mut Vec<u8>) -> $type {
-            const SIZE: usize = $byte_width;
-
-            fn nom_read(data: &[u8]) -> nom::IResult<&[u8], $type> {
-                nom::number::complete::$type2(data)
-            }
-
-            nom_read(data.drain(0..SIZE).collect::<Vec<u8>>().as_slice())
-                .unwrap()
-                .1
-        }
-    };
-}
-
-#[cfg(feature = "cookie-nom")]
-gen_reader!(read_u16, u16, be_u16, 2);
-#[cfg(feature = "cookie-nom")]
-gen_reader!(read_u32, u32, be_u32, 4);
-#[cfg(feature = "cookie-nom")]
-gen_reader!(read_u64, u64, be_u64, 8);
-
-#[cfg(not(feature = "cookie-nom"))]
-pub fn read_string(data: &mut Vec<u8>) -> String {
-    let str_len: usize = read_u32(data) as usize;
-    String::from_utf8(data.drain(..str_len).collect()).unwrap()
-}
-#[cfg(not(feature = "cookie-nom"))]
-pub fn write_string(data: &mut Vec<u8>, val: &str) {
-    write_u32(data, val.len() as u32); // len
-    data.extend_from_slice(val.as_bytes());
-}
-
-#[cfg(feature = "cookie-nom")]
-pub fn write_string(data: &mut Vec<u8>, val: &str) {
-    let gen_len = cookie_factory::bytes::be_u32(val.len() as u32);
-    let gen_str = cookie_factory::combinator::string(val);
-    let gen = cookie_factory::sequence::pair(gen_len, gen_str);
-    cookie_factory::gen(gen, data).unwrap();
-}
-#[cfg(feature = "cookie-nom")]
-pub fn read_string(data: &mut Vec<u8>) -> String {
-    fn nom_read(data: &[u8]) -> nom::IResult<&[u8], String> {
-        let res: nom::IResult<&[u8], u32> = nom::number::complete::be_u32(data);
-        let (next, len) = res.unwrap();
-        nom::combinator::map_res(nom::bytes::complete::take(len), |b: &[u8]| {
-            String::from_utf8(b.to_vec())
-        })(next)
-    }
-    nom_read(data.as_slice()).unwrap().1
-}
+// pub fn read_string(data: &mut Vec<u8>) -> String {
+//     let str_len: usize = read_u32(data) as usize;
+//     String::from_utf8(data.drain(..str_len).collect()).unwrap()
+// }
+// pub fn write_string(data: &mut Vec<u8>, val: &str) {
+//     write_u32(data, val.len() as u32); // len
+//     data.extend_from_slice(val.as_bytes());
+// }
 
 #[cfg(test)]
 mod tests_compat {

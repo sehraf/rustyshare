@@ -15,8 +15,7 @@ use crate::{
 // pub mod serde;
 // pub mod typed_string;
 // pub mod macros;
-// mod nom; // IT'S A PITA
-// pub mod tlv; // IT'S A PITA
+pub mod tlv;
 pub mod string;
 
 pub const TLV_HEADER_SIZE: usize = 6;
@@ -73,24 +72,6 @@ macro_rules! make_tlv_id_set_type {
                 packet
             }
         }
-
-        // impl Default for $name {
-        //     fn default() -> Self {
-        //         Self([0u8; $width])
-        //     }
-        // }
-
-        // impl fmt::Display for $name {
-        //     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        //         write!(f, "{}: {}", stringify!($name), hex::encode(self.0))
-        //     }
-        // }
-
-        // impl Hash for $name {
-        //     fn hash<H: Hasher>(&self, state: &mut H) {
-        //         self.0.hash(state);
-        //     }
-        // }
     };
 }
 
@@ -101,22 +82,6 @@ make_tlv_id_set_type!(TlvGxsIdSet, GxsId, TLV_TYPE_GXSIDSET);
 make_tlv_id_set_type!(TlvGxsMsgIdSet, GxsMessageId, TLV_TYPE_GXSMSGIDSET);
 make_tlv_id_set_type!(TlvGxsCircleIdSet, GxsCircleId, TLV_TYPE_GXSCIRCLEIDSET);
 make_tlv_id_set_type!(TlvNodeGroupIdSet, NodeGroupId, TLV_TYPE_NODEGROUPIDSET);
-
-// typed string
-
-pub fn read_string_typed(data: &mut Vec<u8>, tag: u16) -> String {
-    let t = read_u16(data); // type
-    let s = read_u32(data); // len
-    assert_eq!(t, tag);
-    assert!(s >= TLV_HEADER_SIZE as u32);
-    let str_len = s as usize - TLV_HEADER_SIZE; // remove tlv header length
-    String::from_utf8(data.drain(..str_len).collect()).unwrap()
-}
-pub fn write_string_typed(data: &mut Vec<u8>, val: &str, tag: u16) {
-    write_u16(data, tag);
-    write_u32(data, (val.len() + TLV_HEADER_SIZE) as u32); // len
-    data.extend_from_slice(val.as_bytes());
-}
 
 // tlv ip addr
 
@@ -308,56 +273,32 @@ pub fn write_tlv_ip_addr_set(data: &mut Vec<u8>, addrs: &TlvIpAddrSet) {
 
 #[cfg(test)]
 mod tests_tlv {
-    use std::collections::HashMap;
+    // String is located under `string.rs`
 
-    use crate::{
-        serde::{from_retroshare_wire, to_retroshare_wire, RetroShareTLV},
-        tlv::read_string_typed,
-    };
-    use ::serde::{Deserialize, Serialize};
+    // use std::collections::HashMap;
 
-    use super::write_string_typed;
+    // use crate::{
+    //     serde::{from_retroshare_wire, to_retroshare_wire, RetroShareTLV},
+    //     tlv::read_string_typed,
+    // };
+    // use ::serde::{Deserialize, Serialize};
 
-    #[test]
-    fn test_string_typed() {
-        let s = "test123";
-        let tag = 0x1337;
-
-        let mut data = vec![];
-
-        write_string_typed(&mut data, &s, tag);
-
-        let expected = vec![
-            0x13, 0x37, 0x00, 0x00, 0x00, 0x0d, 0x74, 0x65, 0x73, 0x74, 0x31, 0x32, 0x33,
-        ];
-        assert_eq!(&data, &expected);
-
-        assert_eq!(read_string_typed(&mut data, tag), s);
-    }
+    // use super::write_string_typed;
 
     // #[test]
-    // fn test_tlv_basic() {
-    //     #[derive(Serialize)]
-    //     struct Dummy {
-    //         #[serde(serialize_with = "serialize_tlv")]
-    //         d: Dummy2,
-    //     }
-    //     #[derive(Serialize)]
-    //     struct Dummy2 {
-    //         a: u16,
-    //     }
+    // fn test_string_typed() {
+    //     let s = "test123";
+    //     let tag = 0x1337;
 
-    //     impl RetroShareTLV for Dummy {
-    //         fn get_tlv_tag(&self) -> u16 {
-    //             0x1337
-    //         }
-    //     }
+    //     let mut data = vec![];
 
-    //     let a = Dummy {
-    //         d: Dummy2 { a: 42 },
-    //     };
+    //     write_string_typed(&mut data, &s, tag);
 
-    //     let data = to_retroshare_wire(&a).expect("failed to serialize");
-    //     println!("{:?}", data)
+    //     let expected = vec![
+    //         0x13, 0x37, 0x00, 0x00, 0x00, 0x0d, 0x74, 0x65, 0x73, 0x74, 0x31, 0x32, 0x33,
+    //     ];
+    //     assert_eq!(&data, &expected);
+
+    //     assert_eq!(read_string_typed(&mut data, tag), s);
     // }
 }

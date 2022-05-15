@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use log::{debug, info, trace, warn};
 use retroshare_compat::{
     serde::{from_retroshare_wire, to_retroshare_wire},
-    services::chat::{ChatLobbyListItem, read_rs_chat_lobby_list_item},
+    services::chat::ChatLobbyListItem,
 };
 
 use crate::{
@@ -129,10 +129,8 @@ impl Chat {
                 return handle_packet!(Packet::new(header, payload, packet.peer_id.to_owned()));
             }
             CHAT_SUB_TYPE_CHAT_LOBBY_LIST => {
-                // F*CK TLV
-                // let list: ChatLobbyListItem =
-                //     from_retroshare_wire(&mut packet.payload).expect("failed to deserialize");
-                let list = read_rs_chat_lobby_list_item(&mut packet.payload);
+                let list: ChatLobbyListItem =
+                    from_retroshare_wire(&mut packet.payload).expect("failed to deserialize");
 
                 if log::log_enabled!(log::Level::Info) {
                     info!("[Chat] received lobbies:");

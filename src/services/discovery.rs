@@ -61,8 +61,8 @@ impl Discovery {
             "{} {}",
             env!("CARGO_PKG_VERSION"),
             env!("CARGO_PKG_VERSION")
-        );
-        d.info.location = String::from("Pluto");
+        ).into();
+        d.info.location = String::from("Pluto").into();
 
         d.info.net_mode = 4;
         d.info.vs_dht = VsDht::Off as u16;

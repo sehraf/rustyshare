@@ -6,51 +6,31 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::{
-    read_u32,
-    serde::error::{Error, Result},
-};
+use crate::serde::error::{Error, Result};
 use byteorder::{ByteOrder, NetworkEndian};
 use serde::de::{
     self, Deserialize, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor,
 };
-// use std::ops::{AddAssign, MulAssign, Neg};
 
 pub struct RetroShareWireDeserializer<'de> {
     input: &'de mut Vec<u8>,
 }
 
 impl<'de> RetroShareWireDeserializer<'de> {
-    // By convention, `Deserializer` constructors are named like `from_xyz`.
-    // That way basic use cases are satisfied by something like
-    // `serde_json::from_str(...)` while advanced use cases that require a
-    // deserializer can make one with `serde_json::Deserializer::from_str(...)`.
     pub fn from_retroshare_wire(input: &'de mut Vec<u8>) -> Self {
         RetroShareWireDeserializer { input }
     }
 }
 
-// By convention, the public API of a Serde deserializer is one or more
-// `from_xyz` methods such as `from_str`, `from_bytes`, or `from_reader`
-// depending on what Rust types the deserializer is able to consume as input.
-//
-// This basic deserializer supports only `from_str`.
 pub fn from_retroshare_wire<'a, T>(s: &'a mut Vec<u8>) -> Result<T>
 where
     T: Deserialize<'a>,
 {
     let mut deserializer = RetroShareWireDeserializer::from_retroshare_wire(s);
     let t = T::deserialize(&mut deserializer)?;
-    // if deserializer.input.is_empty() {
     Ok(t)
-    // } else {
-    //     Err(Error::TrailingBytes)
-    // }
 }
 
-// SERDE IS NOT A PARSING LIBRARY. This impl block defines a few basic parsing
-// functions from scratch. More complicated formats may wish to use a dedicated
-// parsing library to help implement their Serde deserializer.
 impl<'de> RetroShareWireDeserializer<'de> {
     fn read_len(&mut self) -> Result<usize> {
         // len is always a u32
@@ -76,20 +56,6 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
         )))
     }
 
-    // Uses the `parse_bool` parsing function defined above to read the JSON
-    // identifier `true` or `false` from the input.
-    //
-    // Parsing refers to looking at the input and deciding that it contains the
-    // JSON value `true` or `false`.
-    //
-    // Deserialization refers to mapping that JSON value into Serde's data
-    // model by invoking one of the `Visitor` methods. In the case of JSON and
-    // bool that mapping is straightforward so the distinction may seem silly,
-    // but in other cases Deserializers sometimes perform non-obvious mappings.
-    // For example the TOML format has a Datetime type and Serde's data model
-    // does not. In the `toml` crate, a Datetime in the input is deserialized by
-    // mapping it to a Serde data model "struct" type with a special name and a
-    // single field containing the Datetime represented as a string.
     fn deserialize_bool<V>(self, _visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -100,8 +66,6 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
         )))
     }
 
-    // The `parse_signed` function is generic over the integer type `T` so here
-    // it is invoked with `T=i8`. The next 8 methods are similar.
     fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -180,7 +144,6 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
         visitor.visit_u64(r)
     }
 
-    // Float parsing is stupidly hard.
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -194,7 +157,6 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
         visitor.visit_f32(f)
     }
 
-    // Float parsing is stupidly hard.
     fn deserialize_f64<V>(self, _visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -204,25 +166,19 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
         )))
     }
 
-    // The `Serializer` implementation on the previous page serialized chars as
-    // single-character strings so handle that representation here.
     fn deserialize_char<V>(self, _visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        // Parse a string, check that it is one character, call `visit_char`.
         Err(Error::Message(String::from(
             "char is not implemented/deserializable",
         )))
     }
 
-    // Refer to the "Understanding deserializer lifetimes" page for information
-    // about the three deserialization flavors of strings in Serde.
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        // visitor.visit_borrowed_str(self.parse_string()?)
         let str_len = self.read_len()?;
         assert!(
             str_len <= self.input.len(),
@@ -259,24 +215,10 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
         unimplemented!()
     }
 
-    // An absent optional is represented as the JSON `null` and a present
-    // optional is represented as just the contained value.
-    //
-    // As commented in `Serializer` implementation, this is a lossy
-    // representation. For example the values `Some(())` and `None` both
-    // serialize as just `null`. Unfortunately this is typically what people
-    // expect when working with JSON. Other formats are encouraged to behave
-    // more intelligently if possible.
     fn deserialize_option<V>(self, _visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        // if self.input.starts_with("null") {
-        //     self.input = &self.input["null".len()..];
-        //     visitor.visit_none()
-        // } else {
-        //     visitor.visit_some(self)
-        // }
         unimplemented!()
     }
 
@@ -285,12 +227,6 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
     where
         V: Visitor<'de>,
     {
-        // if self.input.starts_with("null") {
-        //     self.input = &self.input["null".len()..];
-        //     visitor.visit_unit()
-        // } else {
-        //     Err(Error::ExpectedNull)
-        // }
         unimplemented!()
     }
 
@@ -321,41 +257,19 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
     where
         V: Visitor<'de>,
     {
-        // // Parse the opening bracket of the sequence.
-        // if self.next_char()? == '[' {
-        //     // Give the visitor access to each element of the sequence.
-        //     let value = visitor.visit_seq(CommaSeparated::new(&mut self))?;
-        //     // Parse the closing bracket of the sequence.
-        //     if self.next_char()? == ']' {
-        //         Ok(value)
-        //     } else {
-        //         Err(Error::ExpectedArrayEnd)
-        //     }
-        // } else {
-        //     Err(Error::ExpectedArray)
-        // }
         let len = self.read_len()?;
         let value = visitor.visit_seq(CountReader::new(&mut self, len))?;
         Ok(value)
     }
 
-    // Tuples look just like sequences in JSON. Some formats may be able to
-    // represent tuples more efficiently.
-    //
-    // As indicated by the length parameter, the `Deserialize` implementation
-    // for a tuple in the Serde data model is required to know the length of the
-    // tuple before even looking at the input data.
     fn deserialize_tuple<V>(mut self, _len: usize, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        // self.deserialize_seq(visitor)
-        // let _len = self.read_len()?;
         let value = visitor.visit_seq(DumpReader::new(&mut self))?;
         Ok(value)
     }
 
-    // Tuple structs look just like sequences in JSON.
     fn deserialize_tuple_struct<V>(
         self,
         _name: &'static str,
@@ -365,7 +279,6 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
     where
         V: Visitor<'de>,
     {
-        // self.deserialize_seq(visitor)
         unimplemented!()
     }
 
@@ -376,30 +289,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
     where
         V: Visitor<'de>,
     {
-        // // Parse the opening brace of the map.
-        // if self.next_char()? == '{' {
-        //     // Give the visitor access to each entry of the map.
-        //     let value = visitor.visit_map(CommaSeparated::new(&mut self))?;
-        //     // Parse the closing brace of the map.
-        //     if self.next_char()? == '}' {
-        //         Ok(value)
-        //     } else {
-        //         Err(Error::ExpectedMapEnd)
-        //     }
-        // } else {
-        //     Err(Error::ExpectedMap)
-        // }
         let len = self.read_len()?;
         let value = visitor.visit_map(CountReader::new(&mut self, len))?;
         Ok(value)
     }
 
-    // Structs look just like maps in JSON.
-    //
-    // Notice the `fields` parameter - a "struct" in the Serde data model means
-    // that the `Deserialize` implementation is required to know what the fields
-    // are before even looking at the input data. Any key-value pairing in which
-    // the fields cannot be known ahead of time is probably a map.
     fn deserialize_struct<V>(
         mut self,
         _name: &'static str,
@@ -409,8 +303,6 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
     where
         V: Visitor<'de>,
     {
-        // self.deserialize_map(visitor)
-        // let _len = self.read_len()?;
         let value = visitor.visit_seq(DumpReader::new(&mut self))?;
         Ok(value)
     }
@@ -424,21 +316,6 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
     where
         V: Visitor<'de>,
     {
-        // if self.peek_char()? == '"' {
-        //     // Visit a unit variant.
-        //     visitor.visit_enum(self.parse_string()?.into_deserializer())
-        // } else if self.next_char()? == '{' {
-        //     // Visit a newtype variant, tuple variant, or struct variant.
-        //     let value = visitor.visit_enum(Enum::new(self))?;
-        //     // Parse the matching close brace.
-        //     if self.next_char()? == '}' {
-        //         Ok(value)
-        //     } else {
-        //         Err(Error::ExpectedMapEnd)
-        //     }
-        // } else {
-        //     Err(Error::ExpectedEnum)
-        // }
         unimplemented!()
     }
 
@@ -469,18 +346,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
     where
         V: Visitor<'de>,
     {
-        // self.deserialize_any(visitor)
         unimplemented!()
     }
-
-    // fn deserialize_tlv<V>(self, visitor: V) -> Result<V::Value>
-    // where
-    //     V: Visitor<'de>,
-    // {
-    //     // self.deserialize_any(visitor)
-    //     // unimplemented!()
-    //     let tag = visitor.visit_u16(v)
-    // }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -699,12 +566,3 @@ impl<'de, 'a> VariantAccess<'de> for Enum<'a, 'de> {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-
-// fn deserialize_tlv<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-// where
-//     D: Deserializer<'de>,
-//     T: Deserialize<'de>,
-// {
-//     let tag = u16::deserialize(deserializer).map_err(|err| crate::serde::Error::Message(String::from("failed to read tag")))?;
-//     let len = u32::deserialize(deserializer)?;
-// }
