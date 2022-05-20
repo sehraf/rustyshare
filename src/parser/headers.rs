@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use crate::error::*;
+use crate::{error::*, services::ServiceType};
 use byteorder::{BigEndian, ByteOrder, NetworkEndian};
 
 pub const HEADER_SIZE: usize = 8;
@@ -13,7 +13,7 @@ pub enum Header {
         size: u16,
     },
     Service {
-        service: u16,
+        service: ServiceType,
         sub_type: u8,
         size: u32,
     },
@@ -53,7 +53,7 @@ impl Header {
             0x02 => {
                 // service
                 let t = NetworkEndian::read_u32(&data[0..4]);
-                let service = (t >> 8) as u16;
+                let service = ((t >> 8) as u16).into();
                 let sub_type = t as u8;
                 let size = NetworkEndian::read_u32(&data[4..8]);
                 Ok(Header::Service {
@@ -226,21 +226,21 @@ impl Display for Header {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct SliceHeader {
     pub partial_flags: u8,
     pub slice_packet_id: u32,
     pub size: u16,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ServiceHeader {
-    pub service: u16,
+    pub service: ServiceType,
     pub sub_type: u8,
     pub size: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ClassHeader {
     pub class: u8,
     pub typ: u8,
@@ -249,7 +249,7 @@ pub struct ClassHeader {
 }
 
 impl ServiceHeader {
-    pub fn new(service: u16, sub_type: u8, payload: &Vec<u8>) -> ServiceHeader {
+    pub fn new(service: ServiceType, sub_type: u8, payload: &Vec<u8>) -> ServiceHeader {
         ServiceHeader {
             service,
             sub_type,
@@ -315,13 +315,25 @@ impl From<Header> for ClassHeader {
 mod tests {
     use std::{assert_eq, convert::TryInto};
 
-    use crate::serial_stuff;
+    use crate::services::ServiceType;
 
     use super::Header;
 
+    fn gen_slice_probe() -> Vec<u8> {
+        // vec![0x02, 0xaa, 0xbb, 0xcc, 0x00, 0x00, 0x00, 0x08]
+        let header = Header::Service {
+            service: ServiceType::SliceProbe,
+            sub_type: 0xcc,
+            size: 8,
+        };
+        let mut item: Vec<u8> = Vec::new();
+        item.extend_from_slice(&header.to_bytes());
+        item
+    }
+
     #[test]
     fn header_convert() {
-        let a: [u8; 8] = serial_stuff::gen_slice_probe().try_into().unwrap();
+        let a: [u8; 8] = gen_slice_probe().try_into().unwrap();
 
         // let header = Header::Raw { data: a.clone() };
         let header = Header::try_parse(&a).unwrap();
@@ -332,7 +344,7 @@ mod tests {
                 sub_type,
                 size,
             } => {
-                assert_eq!(service, 0xaabb);
+                assert_eq!(service, ServiceType::SliceProbe);
                 assert_eq!(sub_type, 0xcc);
                 assert_eq!(size, 8);
             }

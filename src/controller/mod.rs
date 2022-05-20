@@ -47,7 +47,7 @@ impl CoreController {
             info!("Core starting ...");
             info!("registered core services:");
             for s in services.get_services() {
-                info!(" - {:04X?}: {}", s.get_id(), s.get_service_info().0);
+                info!(" - {:04X?}: {}", s.get_id() as u16, s.get_service_info().0);
             }
         }
 
@@ -239,7 +239,7 @@ impl CoreController {
             Intercom::Receive(packet) => {
                 assert!(packet.has_location(), "no location set!");
 
-                match self.services.handle_packet(packet.to_owned()).await {
+                match self.services.handle_packet(packet.to_owned(), true).await {
                     // packet was locally handled and an answer was generated
                     HandlePacketResult::Handled(Some(answer)) => {
                         self.data_core.try_send_to_peer(answer).await

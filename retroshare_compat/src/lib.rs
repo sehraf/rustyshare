@@ -5,18 +5,16 @@ use cookie_factory;
 #[cfg(feature = "cookie-nom")]
 use nom;
 
-pub mod serde;
-pub mod tlv;
-
-// pub mod bwctrl;
 pub mod basics;
+pub mod config;
 pub mod events;
-pub mod groups;
 pub mod gxs;
 pub mod keyring;
 pub mod peers;
+pub mod serde;
 pub mod services;
 pub mod sqlite;
+pub mod tlv;
 
 // write
 macro_rules! gen_writer {
@@ -46,15 +44,6 @@ macro_rules! gen_reader {
 gen_reader!(read_u16, u16, 2);
 gen_reader!(read_u32, u32, 4);
 gen_reader!(read_u64, u64, 8);
-
-// pub fn read_string(data: &mut Vec<u8>) -> String {
-//     let str_len: usize = read_u32(data) as usize;
-//     String::from_utf8(data.drain(..str_len).collect()).unwrap()
-// }
-// pub fn write_string(data: &mut Vec<u8>, val: &str) {
-//     write_u32(data, val.len() as u32); // len
-//     data.extend_from_slice(val.as_bytes());
-// }
 
 #[cfg(test)]
 mod tests_compat {
@@ -265,95 +254,3 @@ mod tests_compat {
         assert_eq!(de, foo);
     }
 }
-
-// #[cfg(test)]
-// mod tests_tlv {
-//     use crate::tlv::{
-//         serde::{from_tlv, to_tlv},
-//         *,
-//     };
-//     use ::serde::{Deserialize, Serialize};
-
-//     #[test]
-//     fn test_taged_string() {
-//         impl RsTagged for String {
-//             fn get_tag(&self) -> u16 {
-//                 0x5c
-//             }
-//         }
-
-//         const TAG: u16 = 0x5c;
-//         let foo = String::from("laptop-giomium");
-//         let mut ser = to_tlv(&foo, foo.get_tag()).expect("failed to serialize");
-
-//         // verify correct serialization
-//         let b = hex::decode("005c000000146c6170746f702d67696f6d69756d").unwrap();
-//         assert_eq!(ser, b);
-
-//         let de: String = from_tlv(&mut ser, TAG).expect("failed to deserialize");
-//         assert_eq!(de, foo);
-//     }
-
-//     #[test]
-//     fn test_struct() {
-//         const TAG: u16 = 0x1337;
-
-//         #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
-//         struct NestedA {
-//             a: u16,
-//             b: u16,
-//         }
-
-//         #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
-//         struct NestedB {
-//             c: u32,
-//             d: u32,
-//         }
-
-//         impl RsTagged for NestedA {
-//             fn get_tag(&self) -> u16 {
-//                 42
-//             }
-//         }
-
-//         impl RsTagged for NestedB {
-//             fn get_tag(&self) -> u16 {
-//                 8456
-//             }
-//         }
-//         #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
-//         struct Test {
-//             foo: NestedA,
-//             bar: NestedB,
-//         }
-
-//         impl RsTagged for Test {
-//             fn get_tag(&self) -> u16 {
-//                 0x1337
-//             }
-//         }
-
-//         let foo = Test {
-//             foo: NestedA { a: 0x11, b: 0x99 },
-//             bar: NestedB {
-//                 c: 0xaaaa,
-//                 d: 0xffff,
-//             },
-//         };
-//         let mut ser = to_tlv(&foo, TAG).expect("failed to serialize");
-
-//         println!("{}", hex::encode(ser.as_slice()));
-
-//         let de: Test = from_tlv(&mut ser, TAG).expect("failed to deserialize");
-//         assert_eq!(de, foo);
-//     }
-
-//     #[test]
-//     fn test_tlv_ip_addr_set() {
-//         let foo: TlvIpAddrSet = TlvIpAddrSet::default();
-//         let mut ser: Vec<u8> = vec![];
-//         write_tlv_ip_addr_set(&mut ser, &foo);
-//         let de: TlvIpAddrSet = read_tlv_ip_addr_set(&mut ser);
-//         assert_eq!(de, foo);
-//     }
-// }

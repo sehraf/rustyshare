@@ -7,6 +7,8 @@ use headers::*;
 use log::{trace, warn};
 use retroshare_compat::basics::*;
 
+use crate::services::ServiceType;
+
 pub mod headers;
 
 const SLICE_FLAG_START_BIT: u8 = 1 << 0;
@@ -195,7 +197,7 @@ impl Parser {
                 // got Item
                 trace!("item");
 
-                if service == 0xaabb {
+                if service == ServiceType::SliceProbe {
                     // silently drop slice probing packets
                     assert_eq!(sub_type, 0xcc);
                     return None;

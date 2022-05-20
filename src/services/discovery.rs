@@ -1,12 +1,18 @@
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
+
 use async_trait::async_trait;
 use log::{debug, info, warn};
 use retroshare_compat::{
-    basics::SslId, serde::from_retroshare_wire, services::discovery::*, tlv::*,
-};
-use std::{
-    collections::HashSet,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::Arc,
+    basics::SslId,
+    serde::{from_retroshare_wire, to_retroshare_wire},
+    services::discovery::*,
+    tlv::{
+        tlv_ip_addr::{TlvIpAddrSet, TlvIpAddress},
+        tlv_set::TlvPgpIdSet,
+    },
 };
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
@@ -22,7 +28,8 @@ use crate::{
     utils::simple_stats::StatsCollection,
 };
 
-const DISCOVERY_SERVICE: u16 = 0x0011;
+use super::ServiceType;
+
 const DISCOVERY_SUB_TYPE_PGP_LIST: u8 = 0x01;
 const DISCOVERY_SUB_TYPE_PGP_CERT: u8 = 0x02;
 const DISCOVERY_SUB_TYPE_CONTACT: u8 = 0x05; // deprecated
@@ -61,7 +68,8 @@ impl Discovery {
             "{} {}",
             env!("CARGO_PKG_VERSION"),
             env!("CARGO_PKG_VERSION")
-        ).into();
+        )
+        .into();
         d.info.location = String::from("Pluto").into();
 
         d.info.net_mode = 4;
@@ -74,21 +82,27 @@ impl Discovery {
         d.info.local_addr_v4 = TlvIpAddress(SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0)), 1337));
         d.info.ext_addr_v4 = TlvIpAddress(SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0)), 1337));
 
-        d.info.local_addr_list = TlvIpAddrSet(HashSet::new());
+        d.info.local_addr_list = TlvIpAddrSet::default();
         for local in &*ips.0 {
-            d.info.local_addr_list.0.insert(TlvIpAddressInfo {
-                addr: local.addr.to_owned(),
-                seen_time: 0,
-                source: 0,
-            });
+            d.info.local_addr_list.0.insert(
+                retroshare_compat::tlv::tlv_ip_addr::TlvIpAddressInfoInner {
+                    addr: local.addr.to_owned(),
+                    seen_time: 0,
+                    source: 0,
+                }
+                .into(),
+            );
         }
-        d.info.ext_addr_list = TlvIpAddrSet(HashSet::new());
+        d.info.ext_addr_list = TlvIpAddrSet::default();
         for local in &*ips.1 {
-            d.info.local_addr_list.0.insert(TlvIpAddressInfo {
-                addr: local.addr.to_owned(),
-                seen_time: 0,
-                source: 0,
-            });
+            d.info.local_addr_list.0.insert(
+                retroshare_compat::tlv::tlv_ip_addr::TlvIpAddressInfoInner {
+                    addr: local.addr.to_owned(),
+                    seen_time: 0,
+                    source: 0,
+                }
+                .into(),
+            );
         }
 
         d
@@ -111,7 +125,7 @@ impl Discovery {
                     info!("[Discovery] DiscContactItem: received our info");
                 } else {
                     return self
-                        .handle_peer_contect(&item, packet.peer_id.clone())
+                        .handle_peer_contact(&item, packet.peer_id.clone())
                         .await;
                 }
             }
@@ -132,7 +146,7 @@ impl Discovery {
         handle_packet!()
     }
 
-    async fn handle_peer_contect(
+    async fn handle_peer_contact(
         &self,
         contact: &DiscContactItem,
         from: Arc<SslId>,
@@ -143,17 +157,20 @@ impl Discovery {
                 // send own DISCOVERY_SUB_TYPE_PGP_LIST
                 let mut item = DiscPgpListItem {
                     mode: GossipDiscoveryPgpListMode::Friends,
-                    pgp_id_set: TlvPgpIdSet(HashSet::new()),
+                    pgp_id_set: TlvPgpIdSet::default(),
                 };
 
                 for p in &self.persons {
                     item.pgp_id_set.0.insert(p.get_pgp_id().to_owned());
                 }
 
-                let payload = write_disc_pgp_list_item(&item);
-                let header =
-                    ServiceHeader::new(DISCOVERY_SERVICE, DISCOVERY_SUB_TYPE_PGP_LIST, &payload)
-                        .into();
+                let payload = to_retroshare_wire(&item).expect("failed to serializes");
+                let header = ServiceHeader::new(
+                    ServiceType::Discovery,
+                    DISCOVERY_SUB_TYPE_PGP_LIST,
+                    &payload,
+                )
+                .into();
                 return handle_packet!(Packet::new(header, payload, from));
             }
         } else {
@@ -180,8 +197,8 @@ impl Discovery {
 
 #[async_trait]
 impl Service for Discovery {
-    fn get_id(&self) -> u16 {
-        DISCOVERY_SERVICE
+    fn get_id(&self) -> ServiceType {
+        ServiceType::Discovery
     }
 
     async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
@@ -197,13 +214,16 @@ impl Service for Discovery {
             match cmd {
                 Intercom::PeerUpdate(PeerUpdate::Status(PeerState::Connected(loc, _addr))) => {
                     let mut payload = vec![];
-                    // self.info.current_connect_address = addr.into();// ?!?!
-                    // println!("{}", &self.info);
+
                     write_rs_disc_contact_item(&mut payload, &self.info);
 
                     let packet = Packet::new(
-                        ServiceHeader::new(DISCOVERY_SERVICE, DISCOVERY_SUB_TYPE_CONTACT, &payload)
-                            .into(),
+                        ServiceHeader::new(
+                            ServiceType::Discovery,
+                            DISCOVERY_SUB_TYPE_CONTACT,
+                            &payload,
+                        )
+                        .into(),
                         payload,
                         loc.clone(),
                     );

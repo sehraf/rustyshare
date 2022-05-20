@@ -164,7 +164,7 @@ pub async fn test() -> Result<impl Responder> {
 }
 
 pub async fn run_actix(data_core: Arc<DataCore>) {
-    HttpServer::new(move || {
+    match HttpServer::new(move || {
         let data_core = data_core.clone();
 
         App::new()
@@ -194,8 +194,10 @@ pub async fn run_actix(data_core: Arc<DataCore>) {
             )
     })
     .bind(("127.0.0.1", 9095))
-    .expect("failed to bind")
-    .run()
-    .await
-    .expect("failed to run actix");
+    {
+        Ok(s) => s.run().await.unwrap_or_else(|err| {
+            log::error!("failed to start actix: {err}");
+        }),
+        Err(err) => log::error!("failed to bind actix: {err}"),
+    }
 }

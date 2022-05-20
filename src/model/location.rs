@@ -4,9 +4,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use retroshare_compat::{basics::*, peers::PeerDetails, tlv::TlvIpAddressInfo};
+use retroshare_compat::{basics::*, peers::PeerDetails, tlv::tlv_ip_addr::TlvIpAddressInfo};
 
-use crate::model::{person::Peer, intercom::PeerState};
+use crate::model::{intercom::PeerState, person::Peer};
 
 const PEER_CONNECTION_TRY_DURATION: Duration = Duration::from_secs(60 * 5);
 

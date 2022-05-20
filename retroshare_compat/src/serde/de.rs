@@ -208,11 +208,14 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
         visitor.visit_bytes(&bytes)
     }
 
-    fn deserialize_byte_buf<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        unimplemented!()
+        // assume TLV!!
+        let len = NetworkEndian::read_u32(&self.input[2..6]) as usize; // skip len!
+        let bytes: Vec<u8> = self.input.drain(0..len).collect();
+        visitor.visit_bytes(&bytes)
     }
 
     fn deserialize_option<V>(self, _visitor: V) -> Result<V::Value>

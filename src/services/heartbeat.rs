@@ -13,12 +13,13 @@ use crate::{
     utils::simple_stats::StatsCollection,
 };
 
-const HEARTBEAT_SERVICE: u16 = 0x0016;
+use super::ServiceType;
+
 const HEARTBEAT_SUB_SERVICE: u8 = 0x01;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const HEARTBEAT_PACKET: Header = Header::Service {
-    service: HEARTBEAT_SERVICE,
+    service: ServiceType::Heartbeat,
     sub_type: HEARTBEAT_SUB_SERVICE,
     size: 8,
 };
@@ -34,7 +35,6 @@ impl Heartbeat {
     }
 
     pub fn handle_incoming(&self, header: &ServiceHeader, packet: Packet) -> HandlePacketResult {
-        assert_eq!(header.service, HEARTBEAT_SERVICE);
         assert_eq!(header.sub_type, HEARTBEAT_SUB_SERVICE);
         assert_eq!(packet.payload.len(), 0);
 
@@ -46,8 +46,8 @@ impl Heartbeat {
 
 #[async_trait]
 impl Service for Heartbeat {
-    fn get_id(&self) -> u16 {
-        HEARTBEAT_SERVICE
+    fn get_id(&self) -> ServiceType {
+        ServiceType::Heartbeat
     }
 
     async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {

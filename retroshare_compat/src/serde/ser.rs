@@ -150,62 +150,33 @@ impl<'a> ser::Serializer for &'a mut RetroShareWireSerializer {
         )))
     }
 
-    // This only works for strings that don't require escape sequences but you
-    // get the idea. For example it would emit invalid JSON if the input string
-    // contains a '"' character.
     fn serialize_str(self, v: &str) -> Result<()> {
         self.serialize_u32(v.len() as u32)?;
         self.output.extend_from_slice(v.as_bytes());
         Ok(())
     }
 
-    // Serialize a byte array as an array of bytes. Could also use a base64
-    // string here. Binary formats will typically represent byte arrays more
-    // compactly.
     fn serialize_bytes(self, v: &[u8]) -> Result<()> {
-        // use serde::ser::SerializeSeq;
-        // let mut seq = self.serialize_seq(Some(v.len()))?;
-        // for byte in v {
-        //     seq.serialize_element(byte)?;
-        // }
-        // seq.end()
-
-        // Err(Error::Message(String::from(
-        //     "byte is not implemented/serializable",
-        // )))
-
         self.output.extend_from_slice(v);
         Ok(())
     }
 
-    // An absent optional is represented as the JSON `null`.
     fn serialize_none(self) -> Result<()> {
-        // self.serialize_unit()
         Err(Error::Message(String::from(
             "none is not implemented/serializable",
         )))
     }
 
-    // A present optional is represented as just the contained value. Note that
-    // this is a lossy representation. For example the values `Some(())` and
-    // `None` both serialize as just `null`. Unfortunately this is typically
-    // what people expect when working with JSON. Other formats are encouraged
-    // to behave more intelligently if possible.
     fn serialize_some<T>(self, _value: &T) -> Result<()>
     where
         T: ?Sized + Serialize,
     {
-        // value.serialize(self)
         Err(Error::Message(String::from(
             "some is not implemented/serializable",
         )))
     }
 
-    // In Serde, unit means an anonymous value containing no data. Map this to
-    // JSON as `null`.
     fn serialize_unit(self) -> Result<()> {
-        // self.output += "null";
-        // Ok(())
         Err(Error::Message(String::from(
             "unit is not implemented/serializable",
         )))
@@ -228,19 +199,11 @@ impl<'a> ser::Serializer for &'a mut RetroShareWireSerializer {
     fn serialize_unit_variant(
         self,
         _name: &'static str,
-        _variant_index: u32,
+        variant_index: u32,
         _variant: &'static str,
     ) -> Result<()> {
-        // match name {
-        //     "VsDisc" | "VsDht" => {
-        //         return self.serialize_u16(variant_index as u16);
-        //     }
-        //     _ => {}
-        // }
-
-        Err(Error::Message(String::from(
-            "unit variant is not implemented/serializable",
-        )))
+        // used by GossipDiscoveryPgpListMode which is u32 ... lets see how long this works
+        self.serialize_u32(variant_index)
     }
 
     // As is done here, serializers are encouraged to treat newtype structs as

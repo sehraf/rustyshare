@@ -138,24 +138,18 @@ fn select_location(base_dir: &Path, keys: &Keyring) -> Option<(String, X509, ope
 
 #[tokio::main]
 async fn main() {
-    // std::env::set_var(
-    //     "RUST_LOG",
-    //     "debug,rustyshare::services::heartbeat=warn,rustyshare::services::bwctrl=warn,rustyshare::services::turtle=trace",
-    // );
-    // pretty_env_logger::init();
-    // env_logger::init();
     let mut builder = LogSpecification::builder();
     builder
         // .module("rustyshare::controller::connected_peer", LevelFilter::Debug)
         // .module("rustyshare::controller", LevelFilter::Trace)
         .module("rustyshare::services::heartbeat", LevelFilter::Warn)
         .module("rustyshare::services::bwctrl", LevelFilter::Warn)
-        .module("rustyshare::services::chat", LevelFilter::Trace)
+        // .module("rustyshare::services::chat", LevelFilter::Trace)
         // .module("rustyshare::services::turtle", LevelFilter::Trace)
         // .module("sequoia_openpgp", LevelFilter::Trace)
         // .module("actix", LevelFilter::Trace)
         .module("actix_web::types::json", LevelFilter::Trace)
-        .default(LevelFilter::Debug);
+        .default(LevelFilter::Info);
     flexi_logger::Logger::with(builder.finalize())
         // .log_to_file(FileSpec::default())
         // .print_message()
@@ -203,12 +197,12 @@ async fn main() {
     };
 
     // ... load general config ...
-    let general_cfg = retroshare_compat::config_store::decryp_file(
+    let mut general_cfg = retroshare_compat::config_store::decryp_file(
         &localtion_path.join("config/general.cfg"),
         ssl_key.to_owned(),
     )
     .expect("failed to load peers.cfg");
-    serial_stuff::parse_general_cfg(&general_cfg);
+    serial_stuff::parse_general_cfg(&mut general_cfg);
 
     // ... and load location ...
     let mut peers_cfg = retroshare_compat::config_store::decryp_file(

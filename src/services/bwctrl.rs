@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use log::{debug, info};
-use retroshare_compat::{read_u16, read_u32, write_u16, write_u32};
+use retroshare_compat::{
+    serde::{from_retroshare_wire, to_retroshare_wire},
+    services::bwctrl::BwCtrlAllowedItem,
+};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use crate::{
@@ -16,10 +19,9 @@ use crate::{
     utils::{self, simple_stats::StatsCollection},
 };
 
-const BWCTRL_SERVICE: u16 = 0x0021;
-const BWCTRL_SUB_TYPE: u8 = 0x01; // RS_PKT_SUBTYPE_BWCTRL_ALLOWED_ITEM ?!
+use super::ServiceType;
 
-const BWCTRL_ITEM_TAG: u16 = 0x0035;
+const BWCTRL_SUB_TYPE: u8 = 0x01; // RS_PKT_SUBTYPE_BWCTRL_ALLOWED_ITEM ?!
 
 pub struct BwCtrl {
     events: UnboundedReceiver<Intercom>,
@@ -37,20 +39,14 @@ impl BwCtrl {
         header: &ServiceHeader,
         mut packet: Packet,
     ) -> HandlePacketResult {
-        assert_eq!(header.service, BWCTRL_SERVICE);
         assert_eq!(header.sub_type, BWCTRL_SUB_TYPE);
-        assert_eq!(packet.payload.len(), 10);
 
-        // read tag
-        assert_eq!(BWCTRL_ITEM_TAG, read_u16(&mut packet.payload));
-        // read len
-        assert_eq!(10, read_u32(&mut packet.payload));
-        // read bw limit
-        let bw_limit = read_u32(&mut packet.payload); // status time
+        let item: BwCtrlAllowedItem =
+            from_retroshare_wire(&mut packet.payload).expect("failed to deserialize");
 
         debug!(
             "[BwCtrl] received bandwidth limit of {}/s from {}",
-            utils::units::pretty_print_bytes(bw_limit as u64),
+            utils::units::pretty_print_bytes(item.0 as u64),
             &packet.peer_id
         );
 
@@ -62,8 +58,8 @@ impl BwCtrl {
 
 #[async_trait]
 impl Service for BwCtrl {
-    fn get_id(&self) -> u16 {
-        BWCTRL_SERVICE
+    fn get_id(&self) -> ServiceType {
+        ServiceType::BwCtrl
     }
 
     async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
@@ -78,16 +74,12 @@ impl Service for BwCtrl {
         while let Ok(cmd) = self.events.try_recv() {
             match cmd {
                 Intercom::PeerUpdate(PeerUpdate::Status(PeerState::Connected(loc, _addr))) => {
-                    let mut payload = vec![];
-                    // write tag
-                    write_u16(&mut payload, BWCTRL_ITEM_TAG);
-                    // write len
-                    write_u32(&mut payload, 10);
-                    // write bw limit
-                    write_u32(&mut payload, 1_000_000); // bytes/sec
+                    let item = BwCtrlAllowedItem { 0: 1_000_000 }; // bytes/sec
+                    let payload = to_retroshare_wire(&item).expect("failed to serialize");
 
                     let packet = Packet::new(
-                        ServiceHeader::new(BWCTRL_SERVICE, BWCTRL_SUB_TYPE, &payload).into(),
+                        ServiceHeader::new(ServiceType::BwCtrl.into(), BWCTRL_SUB_TYPE, &payload)
+                            .into(),
                         payload,
                         loc.clone(),
                     );

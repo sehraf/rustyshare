@@ -1,5 +1,6 @@
 use std::{
     collections::hash_map::{HashMap, Values},
+    fmt::Display,
     sync::Arc,
 };
 
@@ -39,18 +40,119 @@ macro_rules! handle_packet {
     };
     ($packet:expr) => {
         HandlePacketResult::Handled(Some($packet))
+    };
+}
+
+const SERVICE_BWCTRL: u16 = 0x0021;
+const SERVICE_CHAT: u16 = 0x0012;
+const SERVICE_DISCOVERY: u16 = 0x0011;
+const SERVICE_HEARTBEAT: u16 = 0x0016;
+const SERVICE_RTT: u16 = 0x1011;
+const SERVICE_SERVICE_INFO: u16 = 0x0020;
+const SERVICE_STATUS: u16 = 0x0102;
+const SERVICE_TURTLE: u16 = 0x0014;
+
+/// Special type only used for signaling
+const SLICE_PROBE: u16 = 0xaabb;
+
+#[repr(u16)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServiceType {
+    Unknown,
+
+    BwCtrl = SERVICE_BWCTRL,
+    Chat = SERVICE_CHAT,
+    Discovery = SERVICE_DISCOVERY,
+    Heartbeat = SERVICE_HEARTBEAT,
+    Rtt = SERVICE_RTT,
+    ServiceInfo = SERVICE_SERVICE_INFO,
+    Status = SERVICE_STATUS,
+    Turtle = SERVICE_TURTLE,
+
+    SliceProbe = SLICE_PROBE,
+}
+
+impl From<&u16> for ServiceType {
+    fn from(t: &u16) -> Self {
+        use ServiceType::*;
+
+        match *t {
+            SERVICE_BWCTRL => BwCtrl,
+            SERVICE_CHAT => Chat,
+            SERVICE_DISCOVERY => Discovery,
+            SERVICE_HEARTBEAT => Heartbeat,
+            SERVICE_RTT => Rtt,
+            SERVICE_SERVICE_INFO => ServiceInfo,
+            SERVICE_STATUS => Status,
+            SERVICE_TURTLE => Turtle,
+
+            SLICE_PROBE => SliceProbe,
+
+            x @ _ => {
+                warn!("unkown service {x}");
+                Unknown
+            }
+        }
+    }
+}
+
+impl From<u16> for ServiceType {
+    fn from(t: u16) -> Self {
+        (&t).into()
+    }
+}
+
+impl From<ServiceType> for u16 {
+    fn from(s: ServiceType) -> Self {
+        use ServiceType::*;
+
+        match s {
+            Unknown => panic!("service type 'unkown' cannot be converted"),
+
+            BwCtrl => SERVICE_BWCTRL,
+            Chat => SERVICE_CHAT,
+            Discovery => SERVICE_DISCOVERY,
+            Heartbeat => SERVICE_HEARTBEAT,
+            Rtt => SERVICE_RTT,
+            ServiceInfo => SERVICE_SERVICE_INFO,
+            Status => SERVICE_STATUS,
+            Turtle => SERVICE_TURTLE,
+
+            SliceProbe => SLICE_PROBE,
+        }
+    }
+}
+
+impl Display for ServiceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use ServiceType::*;
+
+        match self {
+            Unknown => write!(f, "Unknown"),
+
+            BwCtrl => write!(f, "BwCtrl"),
+            Chat => write!(f, "Chat"),
+            Discovery => write!(f, "Discovery"),
+            Heartbeat => write!(f, "Heartbeat"),
+            Rtt => write!(f, "Rtt"),
+            ServiceInfo => write!(f, "ServiceInfo"),
+            Status => write!(f, "Status"),
+            Turtle => write!(f, "Turtle"),
+
+            SliceProbe => write!(f, "SliceProbe"),
+        }
     }
 }
 
 #[async_trait]
 pub trait Service {
-    fn get_id(&self) -> u16;
+    fn get_id(&self) -> ServiceType;
     fn get_service_info(&self) -> (String, u16, u16, u16, u16);
     async fn handle_packet(&self, packet: Packet) -> HandlePacketResult;
     fn tick(&mut self, stats: &mut StatsCollection) -> Option<Vec<Packet>>;
 }
 
-pub struct Services(HashMap<u16, Box<dyn Service + Sync + Send>>);
+pub struct Services(HashMap<ServiceType, Box<dyn Service + Sync + Send>>);
 
 impl Services {
     pub fn new() -> Services {
@@ -90,7 +192,7 @@ impl Services {
         let bwctrl = Box::new(bwctrl::BwCtrl::new(dc).await);
         services.add_service(bwctrl);
 
-        let chat = Box::new(chat::Chat::new(dc).await);
+        let chat = Box::new(chat::Chat::new(dc, core_tx.clone()).await);
         services.add_service(chat);
 
         services
@@ -100,13 +202,14 @@ impl Services {
         self.0.insert(service.get_id(), service);
     }
 
-    pub async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
+    pub async fn handle_packet(&self, packet: Packet, warn_unkown: bool) -> HandlePacketResult {
         trace!("handle_packet {packet:?}");
 
         match &packet.header {
             Header::Service { service, .. } => match self.0.get(&service) {
                 Some(service) => return service.handle_packet(packet).await,
-                None => return HandlePacketResult::NotHandled(packet),
+                None if warn_unkown => warn!("unable to handle service {service}"),
+                None => (),
             },
             header => warn!("unable to handle non service header {header:?}"),
         }
@@ -134,7 +237,7 @@ impl Services {
     }
 
     #[allow(unused)]
-    pub fn get_services(&self) -> Values<u16, Box<dyn Service + Sync + Send>> {
+    pub fn get_services(&self) -> Values<ServiceType, Box<dyn Service + Sync + Send>> {
         self.0.values()
     }
 

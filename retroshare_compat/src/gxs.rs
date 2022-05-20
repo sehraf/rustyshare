@@ -1,6 +1,7 @@
 use ::serde::{Deserialize, Serialize};
 use rusqlite::Result;
 
+use crate::tlv::tlv_keys::{TlvKeySignatureSet, TlvSecurityKeySet};
 #[allow(unused_imports)]
 use crate::{
     basics::{FileHash, GxsCircleId, GxsGroupId, GxsId, GxsMessageId, PeerId},
@@ -225,9 +226,8 @@ gen_db_type!(
     [author_id: GxsId, "identity"],
     [service_string: String, "serv_str"],
     [circle_id: GxsCircleId, "circleId"],
-    // TODO add type
-    // [signSet: TlvKeySignatureSet, "signSet"],
-    // [keys: TlvSecurityKeySet, "keySet"], (??)
+    [sign_set: TlvKeySignatureSet, "signSet"],
+    [keys: TlvSecurityKeySet, "keySet"],
     [sign_flags: u32, "signFlags"],
     [subscribe_flags: u32, "subscribeFlag"],
     [pop: u32, "popularity"],
@@ -314,7 +314,7 @@ gen_db_type!(
     [parent_id: GxsMessageId, "parentId"],
     [orig_msg_id: GxsMessageId, "origMsgId"],
     [author_id: GxsId, "identity"],
-    // [signSet: TlvKeySignatureSet, "signSet"],
+    [sign_set: TlvKeySignatureSet, "signSet"],
     [msg_name: String, "msgName"],
     [publish_ts: i64, "timeStamp"],
     [msg_flags: u32, "flags"],

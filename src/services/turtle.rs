@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use log::{info, trace, warn, debug};
+use log::{debug, info, trace, warn};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, RwLock},
@@ -22,9 +22,7 @@ use crate::{
     },
 };
 
-const TURTLE_SERVICE: u16 = 0x0014;
-// const TURTLE_SUBTYPE_FILE_CRC                = 0x12 ; // unused
-// const TURTLE_SUBTYPE_FILE_CRC_REQUEST        = 0x13 ;
+use super::ServiceType;
 
 const TURTLE_SUB_TYPE_STRING_SEARCH_REQUEST: u8 = 0x01;
 const TURTLE_SUB_TYPE_FT_SEARCH_RESULT: u8 = 0x02;
@@ -332,19 +330,19 @@ impl Turtle {
         //     .expect("failed to get rng, lock poisoned!")
         //     .gen_ratio(66, 100)
 
-        (rand::random::<u16>() as f32) < f32::MAX * 2. / 3.
+        (rand::random::<u32>() as f32) < u32::MAX as f32 * 2. / 3.
     }
 }
 
 #[async_trait]
 impl Service for Turtle {
-    fn get_id(&self) -> u16 {
-        TURTLE_SERVICE
+    fn get_id(&self) -> ServiceType {
+        ServiceType::Turtle
     }
 
     async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
         debug!("handle_packet");
-        
+
         self.handle_incoming(&packet.header.into(), packet).await
     }
 

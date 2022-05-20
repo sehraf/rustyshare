@@ -6,21 +6,9 @@ use crate::{read_u16, read_u32, write_u16, write_u32};
 
 use super::TLV_HEADER_SIZE;
 
-// pub fn read_string_typed(data: &mut Vec<u8>, tag: u16) -> String {
-//     let t = read_u16(data); // type
-//     let s = read_u32(data); // len
-//     assert_eq!(t, tag);
-//     assert!(s >= TLV_HEADER_SIZE as u32);
-//     let str_len = s as usize - TLV_HEADER_SIZE; // remove tlv header length
-//     String::from_utf8(data.drain(..str_len).collect()).unwrap()
-// }
-// pub fn write_string_typed(data: &mut Vec<u8>, val: &str, tag: u16) {
-//     write_u16(data, tag);
-//     write_u32(data, (val.len() + TLV_HEADER_SIZE) as u32); // len
-//     data.extend_from_slice(val.as_bytes());
-// }
+// manually implement StringTagged to be able to add some more traits
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct StringTagged<const TAG: u16>(String);
 
 impl<const TAG: u16, T> From<T> for StringTagged<TAG>
@@ -29,6 +17,12 @@ where
 {
     fn from(s: T) -> Self {
         Self(String::from(s.as_ref()))
+    }
+}
+
+impl<const TAG: u16> From<StringTagged<TAG>> for String {
+    fn from(s: StringTagged<TAG>) -> Self {
+        s.0
     }
 }
 
@@ -71,7 +65,9 @@ impl<'de, const TAG: u16> Deserialize<'de> for StringTagged<TAG> {
                 E: serde::de::Error,
             {
                 let tag = read_u16(&mut v[0..2].to_owned());
-                assert_eq!(tag, TAG);
+                if tag != TAG {
+                    return Err(::serde::de::Error::custom(crate::serde::Error::WrongTag));
+                }
                 let len = read_u32(&mut v[2..6].to_owned()) as usize;
                 assert!(len >= TLV_HEADER_SIZE);
                 assert!(len == v.len());
@@ -89,7 +85,10 @@ impl<'de, const TAG: u16> Deserialize<'de> for StringTagged<TAG> {
 mod test {
     use serde::{Deserialize, Serialize};
 
-    use crate::serde::{from_retroshare_wire, to_retroshare_wire};
+    use crate::{
+        serde::{from_retroshare_wire, to_retroshare_wire},
+        tlv::Tlv2,
+    };
 
     use super::StringTagged;
 
@@ -120,8 +119,8 @@ mod test {
         ];
         assert_eq!(&ser, &expected);
 
-        let der: Dummy = from_retroshare_wire(&mut ser).expect("failed to deserialize");
-        assert_eq!(&der.tagged_string.0, &test.tagged_string.0);
+        let de: Dummy = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        assert_eq!(&de.tagged_string.0, &test.tagged_string.0);
     }
 
     #[test]
@@ -137,8 +136,27 @@ mod test {
 
         assert_eq!(&ser, &expected);
 
-        let der: StringTagged<0x1337> =
+        let de: StringTagged<0x1337> =
             from_retroshare_wire(&mut ser).expect("failed to deserialize");
-        assert_eq!(&der.0, &tagged_string.0);
+        assert_eq!(&de.0, &tagged_string.0);
+    }
+
+    #[test]
+    fn test_tlv_with_length_cut() {
+        type TestType = Tlv2<0x1337, Vec<u8>>;
+
+        let orig = TestType {
+            0: vec![1, 2, 3, 4, 5, 6],
+        };
+
+        let expected = hex::decode("13370000000c010203040506").unwrap();
+
+        let mut ser = to_retroshare_wire(&orig).unwrap();
+
+        assert_eq!(ser, expected);
+
+        let de: TestType = from_retroshare_wire(&mut ser).unwrap();
+
+        assert_eq!(orig, de);
     }
 }

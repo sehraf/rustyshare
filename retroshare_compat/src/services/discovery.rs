@@ -4,7 +4,11 @@ use std::fmt;
 use crate::{
     basics::*,
     serde::{from_retroshare_wire, to_retroshare_wire},
-    tlv::{string::StringTagged, *},
+    tlv::{
+        tlv_ip_addr::{TlvIpAddrSet, TlvIpAddress},
+        tlv_set::TlvPgpIdSet,
+        tlv_string::StringTagged,
+    },
     *,
 };
 
@@ -97,36 +101,37 @@ impl Default for VsDht {
 // 	RsTlvPgpIdSet pgpIdSet;
 // };
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DiscPgpListItem {
     pub mode: GossipDiscoveryPgpListMode,
     pub pgp_id_set: TlvPgpIdSet,
 }
 
-pub fn read_disc_pgp_list_item(data: &mut Vec<u8>) -> DiscPgpListItem {
-    let mode = read_u32(data);
-    let pgp_id_set = TlvPgpIdSet::read(data);
+// pub fn read_disc_pgp_list_item(data: &mut Vec<u8>) -> DiscPgpListItem {
+//     let mode = read_u32(data);
+//     // let pgp_id_set = TlvPgpIdSet::read(data);
+//     let pgp_id_set = from_retroshare_wire(data).expect("failed to deserialize");
 
-    let mode = match mode {
-        0 => GossipDiscoveryPgpListMode::None,
-        1 => GossipDiscoveryPgpListMode::Friends,
-        2 => GossipDiscoveryPgpListMode::Getcert,
-        m => {
-            panic!("mode {} does not match GossipDiscoveryPgpListMode", m);
-        }
-    };
+//     let mode = match mode {
+//         0 => GossipDiscoveryPgpListMode::None,
+//         1 => GossipDiscoveryPgpListMode::Friends,
+//         2 => GossipDiscoveryPgpListMode::Getcert,
+//         m => {
+//             panic!("mode {} does not match GossipDiscoveryPgpListMode", m);
+//         }
+//     };
 
-    DiscPgpListItem { mode, pgp_id_set }
-}
+//     DiscPgpListItem { mode, pgp_id_set }
+// }
 
-pub fn write_disc_pgp_list_item(item: &DiscPgpListItem) -> Vec<u8> {
-    let mut data = vec![];
+// pub fn write_disc_pgp_list_item(item: &DiscPgpListItem) -> Vec<u8> {
+//     let mut data = vec![];
 
-    write_u32(&mut data, item.mode as u32);
-    data.append(&mut item.pgp_id_set.write());
+//     write_u32(&mut data, item.mode as u32);
+//     data.append(&mut to_retroshare_wire(&item.pgp_id_set).expect("failed to serialize"));
 
-    data
-}
+//     data
+// }
 
 // class RsDiscPgpKeyItem: public RsDiscItem
 // {
@@ -236,6 +241,7 @@ pub struct DiscContactItem {
     pub vs_dht: u16,   /* Mandatory */
     pub last_contact: u32,
 
+    // #[serde(skip)]
     pub is_hidden: bool, /* not serialised */
     // HIDDEN.
     pub hidden_addr: StringTagged<0x0084>, // TLV String!
@@ -284,8 +290,8 @@ impl fmt::Display for DiscContactItem {
         )?;
         write!(f, "\tdyndns: {}\n", self.dyndns)?;
 
-        write!(f, "\tlocal_addr_list: {}\n", self.local_addr_list)?;
-        write!(f, "\text_addr_list: {}\n", self.ext_addr_list)?;
+        write!(f, "\tlocal_addr_list: {:?}\n", self.local_addr_list)?;
+        write!(f, "\text_addr_list: {:?}\n", self.ext_addr_list)?;
         write!(f, "]")
     }
 }
@@ -309,51 +315,21 @@ pub fn read_rs_disc_contact_item(payload: &mut Vec<u8>) -> DiscContactItem {
         item.hidden_addr = from_retroshare_wire(payload).unwrap();
         item.hidden_port = from_retroshare_wire(payload).unwrap();
     } else {
-        item.local_addr_v4 = read_tlv_ip_addr(payload).into();
-        item.ext_addr_v4 = read_tlv_ip_addr(payload).into();
-        item.local_addr_v6 = read_tlv_ip_addr(payload).into();
-        item.ext_addr_v6 = read_tlv_ip_addr(payload).into();
-        item.current_connect_address = read_tlv_ip_addr(payload).into();
+        item.local_addr_v4 = from_retroshare_wire(payload).unwrap();
+        item.ext_addr_v4 = from_retroshare_wire(payload).unwrap();
+        item.local_addr_v6 = from_retroshare_wire(payload).unwrap();
+        item.ext_addr_v6 = from_retroshare_wire(payload).unwrap();
+        item.current_connect_address = from_retroshare_wire(payload).unwrap();
         item.dyndns = from_retroshare_wire(payload).unwrap();
 
-        item.local_addr_list = read_tlv_ip_addr_set(payload);
-        item.ext_addr_list = read_tlv_ip_addr_set(payload);
+        item.local_addr_list = from_retroshare_wire(payload).unwrap();
+        item.ext_addr_list = from_retroshare_wire(payload).unwrap();
     }
 
     item
 }
 
 pub fn write_rs_disc_contact_item(payload: &mut Vec<u8>, item: &DiscContactItem) {
-    //    RsTypeSerializer::serial_process          (j,ctx,pgpId,"pgpId");
-    //    RsTypeSerializer::serial_process          (j,ctx,sslId,"sslId");
-    //    RsTypeSerializer::serial_process          (j,ctx,TLV_TYPE_STR_LOCATION,location,"location");
-    //    RsTypeSerializer::serial_process          (j,ctx,TLV_TYPE_STR_VERSION,version,"version");
-    //    RsTypeSerializer::serial_process<uint32_t>(j,ctx,netMode,"netMode");
-    //    RsTypeSerializer::serial_process<uint16_t>(j,ctx,vs_disc,"vs_disc");
-    //    RsTypeSerializer::serial_process<uint16_t>(j,ctx,vs_dht,"vs_dht");
-    //    RsTypeSerializer::serial_process<uint32_t>(j,ctx,lastContact,"lastContact");
-
-    //    // This is a hack. Normally we should have to different item types, in order to avoid this nonesense.
-
-    //    if(j == RsGenericSerializer::DESERIALIZE)
-    // 	   isHidden = ( GetTlvType( &(((uint8_t *) ctx.mData)[ctx.mOffset])  )==TLV_TYPE_STR_DOMADDR);
-
-    //    if(isHidden)
-    //    {
-    // 	   RsTypeSerializer::serial_process          (j,ctx,TLV_TYPE_STR_DOMADDR,hiddenAddr,"hiddenAddr");
-    // 	   RsTypeSerializer::serial_process<uint16_t>(j,ctx,hiddenPort,"hiddenPort");
-    //    }
-    //    else
-    //    {
-    // 	   RsTypeSerializer::serial_process<RsTlvItem>(j,ctx,localAddrV4,"localAddrV4");
-    // 	   RsTypeSerializer::serial_process<RsTlvItem>(j,ctx,  extAddrV4,"extAddrV4");
-    // 	   RsTypeSerializer::serial_process<RsTlvItem>(j,ctx,localAddrV6,"localAddrV6");
-    // 	   RsTypeSerializer::serial_process<RsTlvItem>(j,ctx,  extAddrV6,"extAddrV6");
-    // 	   RsTypeSerializer::serial_process<RsTlvItem>(j,ctx,currentConnectAddress,"currentConnectAddress");
-    // 	   RsTypeSerializer::serial_process           (j,ctx,TLV_TYPE_STR_DYNDNS,dyndns,"dyndns");
-    // 	   RsTypeSerializer::serial_process           (j,ctx,localAddrList,"localAddrList");
-    // 	   RsTypeSerializer::serial_process           (j,ctx,  extAddrList,"extAddrList");
-    //    }
     payload.append(&mut to_retroshare_wire(&item.pgp_id).expect("failed to serialize"));
     payload.append(&mut to_retroshare_wire(&item.ssl_id).expect("failed to serialize"));
     payload.append(&mut to_retroshare_wire(&item.location).expect("failed to serialize"));
@@ -366,16 +342,18 @@ pub fn write_rs_disc_contact_item(payload: &mut Vec<u8>, item: &DiscContactItem)
 
     // TODO add support for hidden nodes
 
-    write_tlv_ip_addr(payload, &item.local_addr_v4.0);
-    write_tlv_ip_addr(payload, &item.ext_addr_v4.0);
-    write_tlv_ip_addr(payload, &item.local_addr_v6.0);
-    write_tlv_ip_addr(payload, &item.ext_addr_v6.0);
-    write_tlv_ip_addr(payload, &item.current_connect_address.0);
+    payload.append(&mut to_retroshare_wire(&item.local_addr_v4.0).expect("failed to serialize"));
+    payload.append(&mut to_retroshare_wire(&item.ext_addr_v4.0).expect("failed to serialize"));
+    payload.append(&mut to_retroshare_wire(&item.local_addr_v6.0).expect("failed to serialize"));
+    payload.append(&mut to_retroshare_wire(&item.ext_addr_v6.0).expect("failed to serialize"));
+    payload.append(
+        &mut to_retroshare_wire(&item.current_connect_address.0).expect("failed to serialize"),
+    );
 
     payload.append(&mut to_retroshare_wire(&item.dyndns).expect("failed to serialize"));
 
-    write_tlv_ip_addr_set(payload, &item.local_addr_list);
-    write_tlv_ip_addr_set(payload, &item.ext_addr_list);
+    payload.append(&mut to_retroshare_wire(&item.local_addr_list).expect("failed to serialize"));
+    payload.append(&mut to_retroshare_wire(&item.ext_addr_list).expect("failed to serialize"));
 }
 
 // class RsDiscIdentityListItem: public RsDiscItem

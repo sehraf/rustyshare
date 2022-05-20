@@ -1,20 +1,20 @@
 use async_trait::async_trait;
-use log::{trace, debug};
-use retroshare_compat::{read_u32, read_u64};
+use log::debug;
+use retroshare_compat::{
+    serde::{from_retroshare_wire, to_retroshare_wire},
+    services::rtt::{RttPingItem, RttPongItem},
+};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{
     handle_packet,
-    parser::{
-        headers::{Header, ServiceHeader},
-        Packet,
-    },
-    serial_stuff,
+    parser::{headers::ServiceHeader, Packet},
     services::{HandlePacketResult, Service},
     utils::simple_stats::StatsCollection,
 };
 
-const RTT_SERVICE: u16 = 0x1011;
+use super::ServiceType;
+
 const RTT_SUB_TYPE_PING: u8 = 0x01;
 const RTT_SUB_TYPE_PONG: u8 = 0x02;
 
@@ -38,89 +38,64 @@ impl Rtt {
     ) -> HandlePacketResult {
         match header.sub_type {
             RTT_SUB_TYPE_PING => {
-                let seq_num = read_u32(&mut packet.payload); // mSeqNo
-                let ping_64 = read_u64(&mut packet.payload); // mPingTS
+                let ping: RttPingItem =
+                    from_retroshare_wire(&mut packet.payload).expect("failed to deserialize");
 
-                let item = Rtt::gen_pong(seq_num, ping_64);
+                let item = Rtt::gen_pong(ping);
                 return handle_packet!(item);
             }
             RTT_SUB_TYPE_PONG => {
-                let _seq_num = read_u32(&mut packet.payload); // mSeqNo
-                let ping_64 = read_u64(&mut packet.payload); // mPingTS
-                let ping_ts = Rtt::u64_to_ts(ping_64);
+                let pong: RttPongItem =
+                    from_retroshare_wire(&mut packet.payload).expect("failed to deserialize");
 
-                let pong_64 = read_u64(&mut packet.payload); // mPongTS
-                let pong_ts = Rtt::u64_to_ts(pong_64);
-
-                let now_ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                let now_ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
                     .expect("Time went backwards");
+                let ping_ts = Rtt::u64_to_ts(pong.ping.ping_ts);
+                let pong_ts = Rtt::u64_to_ts(pong.pong_ts);
 
                 // calculate actual rtt
                 let rtt = now_ts.as_millis() - ping_ts.as_millis();
                 // calculate offset out of their time, assuming, that both (ping and pong) packets had an equal travel time
                 let offset = pong_ts.as_millis() as i128 - (now_ts.as_millis() - rtt / 2) as i128;
 
-                trace!("received rtt: {rtt}ms with a {offset}ms offset");
+                debug!("received rtt: {rtt}ms with a {offset}ms offset");
             }
             sub_type => log::error!("[RTT] recevied unknown sub typ {sub_type}"),
         }
         handle_packet!()
     }
 
-    pub fn gen_ping(seq_num: u32) -> Packet {
-        let mut payload: Vec<u8> = Vec::new();
-        let mut offset = 0;
+    pub fn gen_ping(seq_no: u32) -> Packet {
+        let ping = RttPingItem {
+            seq_no,
+            ping_ts: Rtt::ts_to_u64(
+                &SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards"),
+            ),
+        };
 
-        let header: Header = ServiceHeader {
-            service: RTT_SERVICE,
-            sub_type: RTT_SUB_TYPE_PING,
-            size: 8 + 4 + 8,
-        }
-        .into();
+        let payload = to_retroshare_wire(&ping).expect("failed to serialize");
+        let header = ServiceHeader::new(ServiceType::Rtt, RTT_SUB_TYPE_PING, &payload);
 
-        // seq num
-        serial_stuff::write_u32(&mut payload, &mut offset, seq_num);
-
-        // add time
-        let ping_ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("Time went backwards");
-        serial_stuff::write_u64(&mut payload, &mut offset, Rtt::ts_to_u64(&ping_ts));
-
-        assert_eq!(offset, payload.len());
-        assert_eq!(offset, header.get_payload_size());
-
-        Packet::new_without_location(header, payload)
+        Packet::new_without_location(header.into(), payload)
     }
 
-    fn gen_pong(seq_num: u32, ping_ts: u64) -> Packet {
-        let mut payload: Vec<u8> = Vec::new();
-        let mut offset = 0;
+    fn gen_pong(ping: RttPingItem) -> Packet {
+        let pong = RttPongItem {
+            ping,
+            pong_ts: Rtt::ts_to_u64(
+                &SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards"),
+            ),
+        };
 
-        let header: Header = ServiceHeader {
-            service: RTT_SERVICE,
-            sub_type: RTT_SUB_TYPE_PONG,
-            size: 8 + 4 + 8 + 8,
-        }
-        .into();
+        let payload = to_retroshare_wire(&pong).expect("failed to serialize");
+        let header = ServiceHeader::new(ServiceType::Rtt, RTT_SUB_TYPE_PONG, &payload);
 
-        // seq_num
-        serial_stuff::write_u32(&mut payload, &mut offset, seq_num);
-
-        // ping
-        serial_stuff::write_u64(&mut payload, &mut offset, ping_ts);
-
-        // add pong
-        let pong_ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards");
-        serial_stuff::write_u64(&mut payload, &mut offset, Rtt::ts_to_u64(&pong_ts));
-
-        assert_eq!(offset, payload.len());
-        assert_eq!(offset, header.get_payload_size());
-
-        Packet::new_without_location(header, payload)
+        Packet::new_without_location(header.into(), payload)
     }
 
     fn ts_to_u64(ts: &Duration) -> u64 {
@@ -140,8 +115,8 @@ impl Rtt {
 
 #[async_trait]
 impl Service for Rtt {
-    fn get_id(&self) -> u16 {
-        RTT_SERVICE
+    fn get_id(&self) -> ServiceType {
+        ServiceType::Rtt
     }
 
     async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {

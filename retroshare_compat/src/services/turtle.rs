@@ -23,10 +23,10 @@ type TurtleFileHash = Sha1CheckSum;
 // };
 #[derive(Serialize, Deserialize, Debug)]
 pub struct TurtleOpenTunnelItem {
-    file_hash: TurtleFileHash,
+    pub file_hash: TurtleFileHash,
     pub request_id: u32,
-    partial_tunnel_id: u32,
-    depth: u16,
+    pub partial_tunnel_id: u32,
+    pub depth: u16,
 }
 
 impl fmt::Display for TurtleOpenTunnelItem {

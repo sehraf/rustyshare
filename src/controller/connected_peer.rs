@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use log::{trace, warn, debug};
+use log::{debug, trace, warn, info};
 use retroshare_compat::services::service_info::RsServiceInfo;
 use tokio::{
     io::{self, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -62,6 +62,14 @@ impl ConnectedPeer {
         )))
         .expect("failed to send");
 
+        if log::log_enabled!(log::Level::Info) {
+            info!("Peer ({}) starting ...", location.get_name());
+            info!("registered core services:");
+            for s in services.get_services() {
+                info!(" - {:04X?}: {}", s.get_id() as u16, s.get_service_info().0);
+            }
+        }
+
         // enter main loop
         loop {
             let net_fut = ConnectedPeer::receive_packet(&mut stream_read);
@@ -77,9 +85,16 @@ impl ConnectedPeer {
                             if let Some(packet) = parser.handle_incoming_packet(header, payload) {
                                 // try to handle local service first
                                 // when no local service is able to handle the packet, send it to the core
-                                match services.handle_packet(packet).await {
+                                match services.handle_packet(packet, false).await {
                                     // packet was locally handled and an answer was generated
-                                    HandlePacketResult::Handled(Some(answer)) => ConnectedPeer::send_packet(&mut stream_write, &mut parser, answer).await.expect("failed to send"),
+                                    HandlePacketResult::Handled(Some(mut answer)) => {
+                                        if log::log_enabled!(log::Level::Debug) {
+                                            // local services only send packets to the connected peer
+                                            if !answer.has_location() {
+                                                answer.peer_id = location.get_location_id();
+                                            }
+                                        }
+                                        ConnectedPeer::send_packet(&mut stream_write, &mut parser, answer).await.expect("failed to send");}
                                     // packet was locally handled and no answer was generated
                                     HandlePacketResult::Handled(None) => {}
                                     // packet was not locally handled as no fitting service was found
@@ -118,9 +133,11 @@ impl ConnectedPeer {
                     // handle service ticks
                     if let Some(items) = services.tick_all(&mut stats_dummy) {
                         for mut item in items {
-                            // local services only send packets to the connected peer
-                            if !item.has_location() {
-                                item.peer_id = location.get_location_id();
+                            if log::log_enabled!(log::Level::Debug) {
+                                // local services only send packets to the connected peer
+                                if !item.has_location() {
+                                    item.peer_id = location.get_location_id();
+                                }
                             }
                             ConnectedPeer::send_packet(&mut stream_write, &mut parser, item).await.expect("failed to send");
                         }

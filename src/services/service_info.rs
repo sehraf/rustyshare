@@ -1,20 +1,18 @@
 use async_trait::async_trait;
-use log::{info, debug};
+use log::{debug, info};
 use retroshare_compat::{
-    services::service_info::{read_rs_service_info, write_rs_service_info, RsServiceInfo},
-    tlv::TLV_HEADER_SIZE,
+    serde::{from_retroshare_wire, to_retroshare_wire},
+    services::service_info::{RsServiceInfo, TlvServiceInfoMapRef},
 };
-use std::collections::HashMap;
 
 use crate::{
     handle_packet,
-    parser::{
-        headers::{Header, ServiceHeader, HEADER_SIZE},
-        Packet,
-    },
+    parser::{headers::ServiceHeader, Packet},
     services::{HandlePacketResult, Service},
     utils::simple_stats::StatsCollection,
 };
+
+use super::ServiceType;
 
 impl From<&dyn Service> for RsServiceInfo {
     fn from(service: &dyn Service) -> Self {
@@ -48,7 +46,6 @@ impl From<&Box<dyn Service>> for RsServiceInfo {
     }
 }
 
-pub const SERVICE_INFO_SERVICE: u16 = 0x0020;
 pub const SERVICE_INFO_SUB_TYPE: u8 = 0x01;
 
 pub struct ServiceInfo {}
@@ -65,12 +62,12 @@ impl ServiceInfo {
     ) -> HandlePacketResult {
         match header.sub_type {
             SERVICE_INFO_SUB_TYPE => {
-                let mut services = HashMap::new();
-
-                read_rs_service_info(&mut packet.payload, &mut services);
+                let services = from_retroshare_wire::<TlvServiceInfoMapRef>(&mut packet.payload)
+                    .expect("failed to deserialize")
+                    .0;
 
                 for s in services {
-                    info!("[service_info] num: {:#08X} -> {:?}", s.0, s.1);
+                    info!("[service_info] num: {:#08X} -> {:?}", s.0 .0, s.1 .0);
                 }
             }
             sub_type => log::error!("[service_info] recevied unknown sub typ {sub_type}"),
@@ -81,8 +78,8 @@ impl ServiceInfo {
 
 #[async_trait]
 impl Service for ServiceInfo {
-    fn get_id(&self) -> u16 {
-        SERVICE_INFO_SERVICE
+    fn get_id(&self) -> ServiceType {
+        ServiceType::ServiceInfo
     }
 
     async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
@@ -101,20 +98,9 @@ impl Service for ServiceInfo {
 }
 
 pub fn gen_service_info(services: &Vec<RsServiceInfo>) -> Packet {
-    let inner_data = write_rs_service_info(services);
+    let services: TlvServiceInfoMapRef = services.to_owned().into();
+    let payload = to_retroshare_wire(&services).expect("failed to serialize");
+    let header = ServiceHeader::new(ServiceType::ServiceInfo, SERVICE_INFO_SUB_TYPE, &payload);
 
-    // build packet header
-    let size_complete = inner_data.len();
-    let header = Header::Service {
-        service: SERVICE_INFO_SERVICE,
-        sub_type: SERVICE_INFO_SUB_TYPE,
-        size: (HEADER_SIZE + size_complete + TLV_HEADER_SIZE) as u32, // include 8 byte header size
-    };
-
-    let mut payload: Vec<u8> = vec![];
-    retroshare_compat::write_u16(&mut payload, 1); // type
-    retroshare_compat::write_u32(&mut payload, (size_complete + TLV_HEADER_SIZE) as u32); // len
-    payload.extend(inner_data);
-
-    Packet::new_without_location(header, payload)
+    Packet::new_without_location(header.into(), payload)
 }

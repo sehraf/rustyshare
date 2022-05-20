@@ -1,14 +1,22 @@
 use ::serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 
-use crate::tlv::string::StringTagged;
+use crate::tlv::{tlv_string::StringTagged, tlv_keys::TlvKeySignature};
 
 pub type ChatLobbyId = u64;
 pub type ChatLobbyMsgId = u64;
-pub type ChatLobbyNickName = String;
+pub type ChatLobbyNickName = StringTagged<0x0051>;
 
 // // Flags for chat lobbies
 // //
 // typedef t_RsFlags32<FLAGS_TAG_SERVICE_CHAT > ChatLobbyFlags ;
+pub type ChatLobbyFlags = u32; // FIXME
+
+// const ChatLobbyFlags RS_CHAT_LOBBY_FLAGS_AUTO_SUBSCRIBE( 0x00000001 ) ;
+// const ChatLobbyFlags RS_CHAT_LOBBY_FLAGS_deprecated    ( 0x00000002 ) ;
+// const ChatLobbyFlags RS_CHAT_LOBBY_FLAGS_PUBLIC        ( 0x00000004 ) ;
+// const ChatLobbyFlags RS_CHAT_LOBBY_FLAGS_CHALLENGE     ( 0x00000008 ) ;
+// const ChatLobbyFlags RS_CHAT_LOBBY_FLAGS_PGP_SIGNED    ( 0x00000010 ) ; // requires the signing ID to be PGP-linked. Avoids anonymous crap.
 
 // class RsChatMsgItem: public RsChatItem
 // {
@@ -33,15 +41,15 @@ pub type ChatLobbyNickName = String;
 //     uint32_t recvTime;
 // };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[allow(unused)]
-pub struct ChatMsg {
-    chat_flags: u32,
-    #[serde(rename(serialize = "ser_name"))]
-    send_time: u32,
-    message: String,
+#[serde(rename_all = "camelCase")]
+pub struct ChatMsgItem {
+    pub chat_flags: u32,
+    pub send_time: u32,
+    pub message: StringTagged<0x0057>,
     #[serde(skip)]
-    recv_time: u32,
+    pub recv_time: u32,
 }
 
 // class RsChatLobbyBouncingObject
@@ -62,11 +70,12 @@ pub struct ChatMsg {
 //     virtual uint32_t PacketId() const= 0;
 // };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatLobbyBouncingObject {
-    lobby_id: ChatLobbyId,
-    msg_id: ChatLobbyMsgId,
-    nick: ChatLobbyNickName,
+    pub publobby_id: ChatLobbyId,
+    pub msg_id: ChatLobbyMsgId,
+    pub nick: ChatLobbyNickName,
+    pub signature: TlvKeySignature,
 }
 
 // class RsChatLobbyMsgItem: public RsChatMsgItem, public RsChatLobbyBouncingObject
@@ -85,14 +94,27 @@ pub struct ChatLobbyBouncingObject {
 //     virtual uint32_t PacketId() const { return RsChatMsgItem::PacketId() ; }
 // };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatLobbyMsgItem {
-    #[serde(flatten)]
-    pub bounce_obj: ChatLobbyBouncingObject,
-    #[serde(flatten)]
-    pub msg_obj: ChatMsg,
-
+    pub msg_obj: ChatMsgItem,
     pub parent_msg_id: ChatLobbyMsgId,
+
+    pub bounce_obj: ChatLobbyBouncingObject,
+}
+
+// #define RS_CHAT_LOBBY_EVENT_PEER_LEFT   				0x01
+// #define RS_CHAT_LOBBY_EVENT_PEER_STATUS 				0x02
+// #define RS_CHAT_LOBBY_EVENT_PEER_JOINED 				0x03
+// #define RS_CHAT_LOBBY_EVENT_PEER_CHANGE_NICKNAME 	0x04
+// #define RS_CHAT_LOBBY_EVENT_KEEP_ALIVE          	0x05
+#[repr(u8)]
+#[derive(Debug, Serialize_repr, Deserialize_repr, Clone)]
+pub enum ChatLobbyEvent {
+    PeerLeft = 1,
+    PeerStatus,
+    PeerJoined,
+    PeerChangeNickname,
+    KeepAlive,
 }
 
 // class RsChatLobbyEventItem: public RsChatItem, public RsChatLobbyBouncingObject
@@ -115,14 +137,14 @@ pub struct ChatLobbyMsgItem {
 // 	virtual uint32_t PacketId() const { return RsChatItem::PacketId() ; }
 // };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatLobbyEventItem {
-    #[serde(flatten)]
-    pub bounce_obj: ChatLobbyBouncingObject,
-
-    pub event_type: u8,
-    pub string1: String,
+    pub event_type: ChatLobbyEvent,
+    pub string1: StringTagged<0x0051>,
+    #[serde(rename(serialize = "sendTime", deserialize = "sendTime"))]
     pub send_time: u32,
+
+    pub bounce_obj: ChatLobbyBouncingObject,
 }
 
 // struct VisibleChatLobbyInfo
@@ -133,14 +155,18 @@ pub struct ChatLobbyEventItem {
 //     uint32_t    count ;
 //     ChatLobbyFlags flags ;
 // };
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VisibleChatLobbyInfo {
+    #[serde(rename(serialize = "info.id", deserialize = "info.id"))]
     pub id: ChatLobbyId,
+    #[serde(rename(serialize = "info.name", deserialize = "info.name"))]
     pub name: StringTagged<0x0051>,
+    #[serde(rename(serialize = "info.topic", deserialize = "info.topic"))]
     pub topic: StringTagged<0x0051>,
+    #[serde(rename(serialize = "info.count", deserialize = "info.count"))]
     pub count: u32,
-    // pub flags: CharLobbyFlags, // FIXME
-    pub flags: u32,
+    #[serde(rename(serialize = "info.flags", deserialize = "info.flags"))]
+    pub flags: ChatLobbyFlags,
 }
 
 // class RsChatLobbyListItem: public RsChatItem
@@ -154,7 +180,7 @@ pub struct VisibleChatLobbyInfo {
 //         std::vector<VisibleChatLobbyInfo> lobbies ;
 // };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatLobbyListItem {
     pub lobbies: Vec<VisibleChatLobbyInfo>,
 }
@@ -171,7 +197,7 @@ pub struct ChatLobbyListItem {
 // 		uint64_t lobby_id ;
 // };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatLobbyUnsubscribeItem {
     pub lobby_id: u64,
 }
@@ -188,7 +214,91 @@ pub struct ChatLobbyUnsubscribeItem {
 // 		uint64_t challenge_code ;
 // };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatLobbyConnectChallengeItem {
     pub challenge_code: u64,
 }
+
+// class RsChatLobbyInviteItem: public RsChatItem
+// {
+// 	public:
+// 		RsChatLobbyInviteItem() :RsChatItem(RS_PKT_SUBTYPE_CHAT_LOBBY_INVITE) {}
+// 		virtual ~RsChatLobbyInviteItem() {}
+
+// 		void serial_process(RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx);
+
+// 		ChatLobbyId lobby_id ;
+// 		std::string lobby_name ;
+// 		std::string lobby_topic ;
+// 		ChatLobbyFlags lobby_flags ;
+// };
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatLobbyInviteItem {
+    pub lobby_id: ChatLobbyId,
+    pub lobby_name: StringTagged<0x0051>,
+    pub lobby_topic: StringTagged<0x0051>,
+    pub lobby_flags: ChatLobbyFlags,
+}
+
+// // This class contains activity info for the sending peer: active, idle, typing, etc.
+// //
+// class RsChatStatusItem: public RsChatItem
+// {
+// 	public:
+// 		RsChatStatusItem() :RsChatItem(RS_PKT_SUBTYPE_CHAT_STATUS) {}
+
+// 		virtual ~RsChatStatusItem() {}
+
+// 		void serial_process(RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx);
+
+// 		uint32_t flags ;
+// 		std::string status_string;
+// };
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatStatusItem {
+    pub flags: u32,
+    pub status_string: StringTagged<0x0057>,
+}
+
+// // This class contains avatar images in Qt format.
+// //
+// class RsChatAvatarItem: public RsChatItem
+// {
+// public:
+// 	RsChatAvatarItem():
+// 	    RsChatItem(RS_PKT_SUBTYPE_CHAT_AVATAR),
+// 	    image_size(0), image_data(nullptr)
+// 	{ setPriorityLevel(QOS_PRIORITY_RS_CHAT_AVATAR_ITEM); }
+
+// 	~RsChatAvatarItem() override { free(image_data); }
+
+// 	void serial_process(
+// 	        RsGenericSerializer::SerializeJob j,
+// 	        RsGenericSerializer::SerializeContext& ctx) override;
+
+// 	uint32_t image_size; /// size of data in bytes
+// 	unsigned char* image_data ; /// image data
+// };
+
+// FIXME: add support for RawMemoryWrapper
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatAvatarItem {
+    pub uint32_t: u32,
+    pub image_data: Vec<u8>,
+}
+
+// struct PrivateOugoingMapItem : RsChatItem
+// {
+// 	PrivateOugoingMapItem() : RsChatItem(RS_PKT_SUBTYPE_OUTGOING_MAP) {}
+
+// 	void serial_process( RsGenericSerializer::SerializeJob j,
+// 	                     RsGenericSerializer::SerializeContext& ctx );
+
+// 	std::map<uint64_t, RsChatMsgItem> store;
+// };
+
+// #[derive(Debug, Serialize, Deserialize, Clone)]
+// pub struct PrivateOugoingMapItem {
+//     pub challenge_code: u64,
+// }

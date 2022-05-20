@@ -2,7 +2,6 @@ use hex::FromHex;
 use rusqlite::types::FromSql;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
     convert::{Infallible, TryInto},
     fmt,
     hash::{Hash, Hasher},
@@ -203,12 +202,3 @@ make_webui_types!(PgpId, PgpIdHex, PgpIdWrapped);
 // 	uint32_t max_up_rate_kbs;
 // 	uint32_t max_dl_rate_kbs;
 // };
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct PeerBandwidthLimits {
-    max_up_rate_kbs: u32,
-    max_dl_rate_kbs: u32,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RsPeerBandwidthLimitsItem(HashMap<PgpId, PeerBandwidthLimits>);

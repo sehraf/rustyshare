@@ -1,304 +1,343 @@
 use std::{
-    collections::HashSet,
-    fmt,
-    hash::{Hash, Hasher},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    fmt::{self, Display},
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
+
+use serde::{
+    de::{DeserializeOwned, Visitor},
+    Deserialize, Deserializer, Serialize, Serializer,
 };
 
 use crate::{
-    basics::*,
-    read_u16, read_u32, read_u64,
+    read_u16, read_u32,
     serde::{from_retroshare_wire, to_retroshare_wire},
-    write_u16, write_u32, write_u64,
+    write_u16, write_u32,
 };
 
-// pub mod serde;
-// pub mod typed_string;
-// pub mod macros;
-pub mod tlv;
-pub mod string;
+pub mod tags;
+pub mod tlv_ip_addr;
+pub mod tlv_keys;
+pub mod tlv_map;
+pub mod tlv_set;
+pub mod tlv_string;
 
 pub const TLV_HEADER_SIZE: usize = 6;
 
-// typedef t_RsTlvIdSet<RsPeerId,      TLV_TYPE_PEERSET>	        RsTlvPeerIdSet ;
-// typedef t_RsTlvIdSet<RsPgpId,       TLV_TYPE_PGPIDSET>	        RsTlvPgpIdSet ;
-// typedef t_RsTlvIdSet<Sha1CheckSum,  TLV_TYPE_HASHSET> 	        RsTlvHashSet ;
-// typedef t_RsTlvIdSet<RsGxsId,       TLV_TYPE_GXSIDSET>          RsTlvGxsIdSet ;
-// typedef t_RsTlvIdSet<RsGxsMessageId,TLV_TYPE_GXSMSGIDSET>       RsTlvGxsMsgIdSet ;
-// typedef t_RsTlvIdSet<RsGxsCircleId, TLV_TYPE_GXSCIRCLEIDSET>    RsTlvGxsCircleIdSet ;
-// typedef t_RsTlvIdSet<RsNodeGroupId, TLV_TYPE_NODEGROUPIDSET>    RsTlvNodeGroupIdSet ;
-const TLV_TYPE_PEERSET: u16 = 0x1021;
-const TLV_TYPE_HASHSET: u16 = 0x1022;
-const TLV_TYPE_PGPIDSET: u16 = 0x1023;
-const TLV_TYPE_GXSIDSET: u16 = 0x1025;
-const TLV_TYPE_GXSCIRCLEIDSET: u16 = 0x1026;
-const TLV_TYPE_NODEGROUPIDSET: u16 = 0x1027;
-const TLV_TYPE_GXSMSGIDSET: u16 = 0x1028;
+/// Generic TLV type that expects the innter `T` to **not include a size** when being serialized.
+///
+/// This is usefull for wrapping stucts into TLV, for exmaple, `type Test = Tlv<0x1337, u8>`
+#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+pub struct Tlv<const TAG: u16, T>(pub T);
 
-macro_rules! make_tlv_id_set_type {
-    ($name:ident, $typ:ident, $tag:expr) => {
-        #[derive(Clone, Debug, Eq, PartialEq, Default)]
-        pub struct $name(pub HashSet<$typ>);
+impl<const TAG: u16, T> Serialize for Tlv<TAG, T>
+where
+    T: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let bytes = to_retroshare_wire(&self.0).expect("failed to serialize");
 
-        impl $name {
-            pub fn read(data: &mut Vec<u8>) -> Self {
-                let mut item = $name(HashSet::new());
-                let tag = read_u16(data);
-                let len = read_u32(data) as usize;
-                assert_eq!(tag, $tag);
+        let mut ser = vec![];
+        write_u16(&mut ser, TAG);
+        write_u32(&mut ser, (bytes.len() + TLV_HEADER_SIZE) as u32);
+        ser.extend_from_slice(&bytes);
 
-                let end = data.len() - (len - TLV_HEADER_SIZE);
-                while data.len() > end {
-                    let id: $typ = from_retroshare_wire(data).expect("failed to read ID");
-                    item.0.insert(id);
+        serializer.serialize_bytes(ser.as_slice())
+    }
+}
+
+impl<'de, const TAG: u16, T> Deserialize<'de> for Tlv<TAG, T>
+where
+    T: DeserializeOwned,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct TlvVisitor<const TAG: u16, T>(PhantomData<T>);
+
+        impl<'de, const TAG: u16, T> Visitor<'de> for TlvVisitor<TAG, T>
+        where
+            T: DeserializeOwned,
+        {
+            type Value = Tlv<TAG, T>;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "TLV")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let tag = read_u16(&mut v[0..2].to_owned());
+                if tag != TAG {
+                    return Err(::serde::de::Error::custom(crate::serde::Error::WrongTag));
                 }
+                let len = read_u32(&mut v[2..6].to_owned()) as usize;
+                assert!(len >= TLV_HEADER_SIZE);
+                assert!(len == v.len());
 
-                item
+                let mut bytes = v[6..len].into();
+                let s: T = from_retroshare_wire(&mut bytes).expect("failed to deserialize");
+
+                Ok(Tlv(s))
+            }
+        }
+
+        deserializer.deserialize_byte_buf(TlvVisitor(PhantomData))
+    }
+}
+
+impl<const TAG: u16, T> Deref for Tlv<TAG, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<const TAG: u16, T> DerefMut for Tlv<TAG, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<const TAG: u16, T> Display for Tlv<TAG, T>
+where
+    T: Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<const TAG: u16, T> From<T> for Tlv<TAG, T> {
+    fn from(t: T) -> Self {
+        Self(t)
+    }
+}
+
+// https://doc.rust-lang.org/error-index.html#E0210
+// impl<const TAG: u16, T> From<Tlv<TAG, T>> for T {
+//     fn from(t: Tlv<TAG, T>) -> Self {
+//         t.0
+//     }
+// }
+
+// impl<const TAG: u16, T> Into<T> for Tlv<TAG, T> {
+//     fn into(self) -> T {
+//         self.0
+//     }
+// }
+
+/// Generic TLV type that expects the innter `T` to **contain its byte size** when being serialized.
+///
+/// This is usefull for wrapping stucts into TLV, for exmaple, `type Test = Tlv2<0x1337, String>`
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+pub struct Tlv2<const TAG: u16, T>(T);
+
+impl<const TAG: u16, T: Serialize> Serialize for Tlv2<TAG, T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut bytes = to_retroshare_wire(&self.0).expect("failed to serialize");
+
+        // remove length
+        // let bytes: Vec<_> = bytes.drain(4..).collect();
+        let _: Vec<_> = bytes.drain(..4).collect();
+
+        let mut ser = vec![];
+        write_u16(&mut ser, TAG);
+        write_u32(&mut ser, (bytes.len() + TLV_HEADER_SIZE) as u32);
+        ser.extend(bytes);
+
+        serializer.serialize_bytes(ser.as_slice())
+    }
+}
+
+impl<'de, const TAG: u16, T: DeserializeOwned> Deserialize<'de> for Tlv2<TAG, T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Tlv2Visitor<const TAG: u16, T>(PhantomData<T>);
+
+        impl<'de, const TAG: u16, T: DeserializeOwned> Visitor<'de> for Tlv2Visitor<TAG, T> {
+            type Value = Tlv2<TAG, T>;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "a Tlv2")
             }
 
-            pub fn write(&self) -> Vec<u8> {
-                let mut data: Vec<u8> = vec![];
-
-                // write payload
-                for entry in &self.0 {
-                    data.append(&mut to_retroshare_wire(entry).expect("failed to serialize ID"));
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let tag = read_u16(&mut v[0..2].to_owned());
+                if tag != TAG {
+                    return Err(::serde::de::Error::custom(crate::serde::Error::WrongTag));
                 }
-                // create TLV header
-                let mut packet: Vec<u8> = vec![];
-                write_u16(&mut packet, $tag);
-                write_u32(&mut packet, (data.len() + TLV_HEADER_SIZE) as u32);
-                packet.append(&mut data);
+                let len = read_u32(&mut v[2..6].to_owned()) as usize;
+                assert!(len >= TLV_HEADER_SIZE);
+                assert!(len == v.len());
 
-                packet
+                let mut bytes = vec![];
+                write_u32(&mut bytes, (len - TLV_HEADER_SIZE) as u32);
+                bytes.extend_from_slice(&v[6..len]);
+
+                let s = from_retroshare_wire(&mut bytes).expect("failed to deserialize");
+
+                Ok(Tlv2(s))
             }
         }
-    };
-}
 
-make_tlv_id_set_type!(TlvPeerIdSet, SslId, TLV_TYPE_PEERSET);
-make_tlv_id_set_type!(TlvPgpIdSet, PgpId, TLV_TYPE_PGPIDSET);
-make_tlv_id_set_type!(TlvHashSet, Sha1CheckSum, TLV_TYPE_HASHSET);
-make_tlv_id_set_type!(TlvGxsIdSet, GxsId, TLV_TYPE_GXSIDSET);
-make_tlv_id_set_type!(TlvGxsMsgIdSet, GxsMessageId, TLV_TYPE_GXSMSGIDSET);
-make_tlv_id_set_type!(TlvGxsCircleIdSet, GxsCircleId, TLV_TYPE_GXSCIRCLEIDSET);
-make_tlv_id_set_type!(TlvNodeGroupIdSet, NodeGroupId, TLV_TYPE_NODEGROUPIDSET);
-
-// tlv ip addr
-
-pub fn read_tlv_ip_addr(data: &mut Vec<u8>) -> SocketAddr {
-    let tag = read_u16(data); // type
-    let len = read_u32(data); // len
-    assert_eq!(tag, 0x1072); // const uint16_t TLV_TYPE_ADDRESS       = 0x1072;
-
-    if len == TLV_HEADER_SIZE as u32 {
-        // no actual payload
-        return TlvIpAddress::default().0;
-    }
-
-    let tag = read_u16(data); // type
-    match tag {
-        0x0085 => {
-            assert_eq!(read_u32(data), 12); // len
-            let addr_loc_v4 = {
-                let ip = read_u32(data).swap_bytes(); // why?!
-                let port = read_u16(data).swap_bytes(); // why?!
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip)), port)
-            };
-            return addr_loc_v4;
-        }
-        0x0086 => {
-            assert_eq!(read_u32(data), 24); // len
-            let mut ip: u128 = 0;
-            for _ in 0..4 {
-                ip = ip.overflowing_shl(32).0;
-                ip += read_u32(data) as u128;
-            }
-            let port = read_u16(data).swap_bytes(); // why?!
-            return SocketAddr::new(IpAddr::V6(Ipv6Addr::from(ip)), port);
-        }
-        tag => panic!("unkown ip type {:04X} size {:?}", tag, len),
-    }
-}
-pub fn write_tlv_ip_addr(data: &mut Vec<u8>, addr: &SocketAddr) {
-    write_u16(data, 0x1072); // tag
-
-    if addr == &TlvIpAddress::default().0 {
-        // empty packet
-        write_u32(data, TLV_HEADER_SIZE as u32); // len
-        return;
-    }
-
-    match addr {
-        SocketAddr::V4(addr) => {
-            write_u32(data, (TLV_HEADER_SIZE + TLV_HEADER_SIZE + 4 + 2) as u32); // len
-            write_u16(data, 0x0085); // tag
-            write_u32(data, (TLV_HEADER_SIZE + 4 + 2) as u32);
-            write_u32(data, u32::from_le_bytes(addr.ip().octets())); // is LE correct here?!
-            write_u16(data, addr.port().swap_bytes());
-        }
-        SocketAddr::V6(addr) => {
-            write_u32(data, (TLV_HEADER_SIZE + TLV_HEADER_SIZE + 16 + 2) as u32); // len
-            write_u16(data, 0x0086); // tag
-            write_u32(data, (TLV_HEADER_SIZE + 16 + 2) as u32);
-            data.extend_from_slice(&addr.ip().octets()); // swap bytes required?!
-            write_u16(data, addr.port().swap_bytes());
-        }
+        deserializer.deserialize_bytes(Tlv2Visitor(PhantomData))
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-// #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
-pub struct TlvIpAddress(pub SocketAddr);
-
-impl Default for TlvIpAddress {
-    fn default() -> Self {
-        TlvIpAddress(SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0)), 0))
+impl<const TAG: u16, T> Deref for Tlv2<TAG, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-impl Hash for TlvIpAddress {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
+impl<const TAG: u16, T> DerefMut for Tlv2<TAG, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
-impl From<SocketAddr> for TlvIpAddress {
-    fn from(s: SocketAddr) -> Self {
-        TlvIpAddress(s)
-    }
-}
-
-impl fmt::Display for TlvIpAddress {
+impl<const TAG: u16, T> Display for Tlv2<TAG, T>
+where
+    T: Display,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        self.0.fmt(f)
     }
 }
 
-// class RsTlvIpAddressInfo: public RsTlvItem
-// {
-// 	RsTlvIpAddress addr; 				// Mandatory :
-// 	uint64_t  seenTime;				// Mandatory :
-// 	uint32_t  source; 				// Mandatory :
-// };
-#[derive(Debug, PartialEq, Eq, Default, Clone)]
-pub struct TlvIpAddressInfo {
-    pub addr: TlvIpAddress,
-    pub seen_time: u64,
-    pub source: u32,
-}
-
-impl Hash for TlvIpAddressInfo {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.addr.hash(state);
-        self.seen_time.hash(state);
-        self.source.hash(state);
+impl<const TAG: u16, T> From<T> for Tlv2<TAG, T> {
+    fn from(a: T) -> Self {
+        Self(a)
     }
-}
-
-impl From<TlvIpAddressInfo> for SocketAddr {
-    fn from(tlv: TlvIpAddressInfo) -> Self {
-        tlv.addr.0
-    }
-}
-
-impl fmt::Display for TlvIpAddressInfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TlvIpAddressInfo: [")?;
-        write!(f, " addr: {}", self.addr)?;
-        write!(f, " seen_time: {}", self.seen_time)?;
-        write!(f, " source: {}", self.source)?;
-        write!(f, "]")
-    }
-}
-
-pub fn read_tlv_ip_address_info(data: &mut Vec<u8>) -> TlvIpAddressInfo {
-    let mut item = TlvIpAddressInfo::default();
-    assert_eq!(read_u16(data), 0x1070); // const uint16_t TLV_TYPE_ADDRESS_INFO  = 0x1070;
-    let _ = read_u32(data); // len
-    item.addr = read_tlv_ip_addr(data).into();
-    item.seen_time = read_u64(data);
-    item.source = read_u32(data);
-    item
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-// #[derive(Debug)]
-pub struct TlvIpAddrSet(pub HashSet<TlvIpAddressInfo>);
-
-impl fmt::Display for TlvIpAddrSet {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut first = true;
-
-        write!(f, "TlvIpAddrSet: [")?;
-        for ip in &self.0 {
-            if !first {
-                write!(f, ", ")?;
-            } else {
-                first = false;
-            }
-            write!(f, "{}", ip.addr.0)?;
-        }
-        write!(f, "]")
-    }
-}
-
-pub fn read_tlv_ip_addr_set(data: &mut Vec<u8>) -> TlvIpAddrSet {
-    let mut item = TlvIpAddrSet(HashSet::new());
-    assert_eq!(read_u16(data), 0x1071); // const uint16_t TLV_TYPE_ADDRESS_SET   = 0x1071;
-    let len = read_u32(data) as usize; // len
-    let end_len = data.len() - (len - TLV_HEADER_SIZE);
-    while data.len() > end_len {
-        item.0.insert(read_tlv_ip_address_info(data));
-    }
-    item
-}
-
-pub fn write_tlv_ip_addr_set(data: &mut Vec<u8>, addrs: &TlvIpAddrSet) {
-    let mut payload: Vec<u8> = vec![];
-    for addr in &addrs.0 {
-        let mut ip_payload: Vec<u8> = vec![];
-        write_tlv_ip_addr(&mut ip_payload, &addr.addr.0);
-
-        write_u16(&mut payload, 0x1070);
-        write_u32(&mut payload, (TLV_HEADER_SIZE + ip_payload.len()) as u32);
-        payload.append(&mut ip_payload);
-        write_u64(&mut payload, addr.seen_time);
-        write_u32(&mut payload, addr.source);
-    }
-
-    write_u16(data, 0x1071);
-    write_u32(data, (TLV_HEADER_SIZE + payload.len()) as u32);
-    data.append(&mut payload);
 }
 
 #[cfg(test)]
-mod tests_tlv {
-    // String is located under `string.rs`
+mod test_tlv {
+    use std::collections::HashSet;
 
-    // use std::collections::HashMap;
+    use crate::{
+        basics::SslId,
+        serde::{from_retroshare_wire, to_retroshare_wire},
+        tlv::{tlv_set::TlvPeerIdSet, Tlv, Tlv2, TLV_HEADER_SIZE},
+        write_u16, write_u32,
+    };
+    use serde::{Deserialize, Serialize};
 
-    // use crate::{
-    //     serde::{from_retroshare_wire, to_retroshare_wire, RetroShareTLV},
-    //     tlv::read_string_typed,
-    // };
-    // use ::serde::{Deserialize, Serialize};
+    macro_rules! do_it {
+        ($tag:expr, $val:expr, $expected:expr) => {
+            let mut expected = vec![];
+            write_u16(&mut expected, $tag);
+            write_u32(
+                &mut expected,
+                (std::mem::size_of_val(&$val) + TLV_HEADER_SIZE) as u32,
+            );
+            expected.append(&mut $expected);
 
-    // use super::write_string_typed;
+            let orig: Tlv<$tag, _> = Tlv($val);
+            let ser = to_retroshare_wire(&orig).unwrap();
+            println!("{ser:?}");
 
-    // #[test]
-    // fn test_string_typed() {
-    //     let s = "test123";
-    //     let tag = 0x1337;
+            assert_eq!(ser, expected);
+        };
+    }
 
-    //     let mut data = vec![];
+    macro_rules! do_it_not {
+        ($tag:expr, $val:expr, $expected:expr) => {
+            let mut expected = vec![];
+            write_u16(&mut expected, $tag);
+            write_u32(
+                &mut expected,
+                (std::mem::size_of_val(&$val) + TLV_HEADER_SIZE) as u32,
+            );
+            expected.append(&mut $expected);
 
-    //     write_string_typed(&mut data, &s, tag);
+            let orig: Tlv<$tag, _> = Tlv($val);
+            let ser = to_retroshare_wire(&orig).unwrap();
+            println!("{ser:?}");
 
-    //     let expected = vec![
-    //         0x13, 0x37, 0x00, 0x00, 0x00, 0x0d, 0x74, 0x65, 0x73, 0x74, 0x31, 0x32, 0x33,
-    //     ];
-    //     assert_eq!(&data, &expected);
+            assert_ne!(ser, expected);
+        };
+    }
 
-    //     assert_eq!(read_string_typed(&mut data, tag), s);
-    // }
+    #[test]
+    fn test_tlv_good() {
+        do_it!(
+            0x1337,
+            [1, 2, 3, 4, 5] as [u8; 5],
+            hex::decode("0102030405").unwrap()
+        );
+        do_it!(
+            0x1338,
+            [1, 2, 3, 4, 5] as [u16; 5],
+            hex::decode("00010002000300040005").unwrap()
+        );
+
+        // ints
+        do_it!(0x1478, 0x42u8, hex::decode("42").unwrap());
+        do_it!(0x1478, 0x4200u16, hex::decode("4200").unwrap());
+        do_it!(0x1478, 0x4200i16, hex::decode("4200").unwrap());
+        do_it!(0x1478, 0x42000000u32, hex::decode("42000000").unwrap());
+        do_it!(
+            0x1478,
+            0x4200000000000000u64,
+            hex::decode("4200000000000000").unwrap()
+        );
+    }
+
+    #[test]
+    fn test_tlv_bad() {
+        // anything that stores a length internaly doesn't work
+        // String
+        do_it_not!(
+            0x5c,
+            String::from("laptop-giomium"),
+            hex::decode("6c6170746f702d67696f6d69756d").unwrap()
+        );
+
+        // HashSet
+        // TlvPeerIdSet
+        #[derive(Serialize, Deserialize)]
+        pub struct Dummy(HashSet<SslId>);
+        let a1 = Dummy { 0: HashSet::new() };
+        let a2 = TlvPeerIdSet {
+            ..Default::default()
+        };
+        let b = a2.write();
+        do_it_not!(0x1021, a1, b.into());
+    }
+
+    #[test]
+    fn test_tlv_with_length_cut() {
+        type TestType = Tlv2<0x1337, Vec<u8>>;
+
+        let orig = TestType {
+            0: vec![1, 2, 3, 4, 5, 6],
+        };
+
+        let expected = hex::decode("13370000000c010203040506").unwrap();
+
+        let mut ser = to_retroshare_wire(&orig).unwrap();
+
+        assert_eq!(ser, expected);
+
+        let de: TestType = from_retroshare_wire(&mut ser).unwrap();
+
+        assert_eq!(orig, de);
+    }
 }

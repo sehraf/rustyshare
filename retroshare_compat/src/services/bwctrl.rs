@@ -1,9 +1,5 @@
-use ::serde::{Deserialize, Serialize};
-use std::fmt;
+use crate::tlv::Tlv;
 
-use crate::basics::*;
+const BWCTRL_ITEM_TAG: u16 = 0x0035;
 
-// TODO this is transported as TLV, currently (de)serialized by hand in the service
-struct BwCtrlAllowedItem {
-    allowed_bw: u32,
-}
+pub type BwCtrlAllowedItem = Tlv<BWCTRL_ITEM_TAG, u32>;
