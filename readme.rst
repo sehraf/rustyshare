@@ -17,9 +17,10 @@ Update 2 - *async/await and TLV*:
        - `TlvMapWithPair` generic TLV map that wrapps both `Key` and `Value` in a `TlvGenericPairRef` ...
        - also `TlvIpAddress` requires extra work since the same packet/tag can contain a IPv4 or IPv6 TlvIpAddress annd you have to check the inner tag to find out
        - also `TlvSecurityKeySet` requires extra work since private and public keys are the same and you have to check the key flags after serializing it
+ - everything blocking is now async (network, queues) using tokio
  - added support for sqlite(-cipher) (very basic)
  - added support for the REST api (using actix), not much is implemented yet
-    - also the RsNewWebUi doesn't use `content-type` so actix will complain (complain == doen't do anything)
+    - also the RsNewWebUi doesn't use `content-type` so actix will complain (complain == doesn't do anything)
        - can be fixed in RsNewWebUi by adding `headers['Content-type'] = 'application/json';` in rswebui_
  - removed any manual serialisation (looking at you `serial_stuff.rs`)
  - stubbed out `chat` service
