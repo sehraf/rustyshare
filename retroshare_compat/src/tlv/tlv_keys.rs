@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt};
+use std::{collections::HashSet, fmt, ops::Deref};
 
 use rusqlite::types::FromSql;
 use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
@@ -7,14 +7,12 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use crate::{
     basics::GxsId,
     read_u16, read_u32,
-    serde::{from_retroshare_wire, to_retroshare_wire},
+    serde::{from_retroshare_wire_result, to_retroshare_wire_result},
     tlv::tags::*,
     write_u16, write_u32,
 };
 
-use super::{tlv_map::TlvMap, tlv_string::StringTagged, Tlv, Tlv2, TLV_HEADER_SIZE};
-
-pub type TlvBinaryData<const TAG: u16> = Tlv2<TAG, Vec<u8>>;
+use super::{tlv_map::TlvMap, tlv_string::StringTagged, Tlv, TlvBinaryData, TLV_HEADER_SIZE};
 
 // class RsTlvKeySignature: public RsTlvItem
 // {
@@ -23,12 +21,51 @@ pub type TlvBinaryData<const TAG: u16> = Tlv2<TAG, Vec<u8>>;
 // 		RsTlvBinaryData signData; 	// Mandatory :
 // };
 
+// BUG this is a RS bug, the GxsId is serialized as a string
+// Use a newtype to handle it easier.
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Clone, Deserialize, Hash)]
+pub struct KeyId(StringTagged<TLV_TYPE_STR_KEYID>);
+
+impl Deref for KeyId {
+    type Target = StringTagged<TLV_TYPE_STR_KEYID>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<KeyId> for GxsId {
+    fn from(id: KeyId) -> Self {
+        id.to_string().into()
+    }
+}
+
+impl From<GxsId> for KeyId {
+    fn from(id: GxsId) -> Self {
+        Self(id.to_string().into())
+    }
+}
+
+impl PartialEq<GxsId> for KeyId {
+    fn eq(&self, other: &GxsId) -> bool {
+        self.to_string() == other.to_string()
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct TlvKeySignatureInner {
     #[serde(rename(serialize = "keyId", deserialize = "keyId"))]
-    key_id: Tlv<TLV_TYPE_STR_KEYID, GxsId>,
+    pub key_id: KeyId,
     #[serde(rename(serialize = "signData", deserialize = "signData"))]
-    sign_data: TlvBinaryData<TLV_TYPE_SIGN_RSA_SHA1>,
+    pub sign_data: TlvBinaryData<TLV_TYPE_SIGN_RSA_SHA1>,
+}
+
+impl TlvKeySignatureInner {
+    pub fn new(key_id: KeyId) -> Self {
+        Self {
+            key_id,
+            sign_data: vec![].into(),
+        }
+    }
 }
 
 pub type TlvKeySignature = Tlv<TLV_TYPE_KEYSIGNATURE, TlvKeySignatureInner>;
@@ -60,11 +97,23 @@ pub type TlvKeySignatureSet =
 impl FromSql for TlvKeySignatureSet {
     fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
         match value.as_bytes_or_null()? {
-            Some(bytes) => Ok(from_retroshare_wire(&mut bytes.into())
+            Some(bytes) => Ok(from_retroshare_wire_result(&mut bytes.into())
                 .map_err(|err| rusqlite::types::FromSqlError::Other(Box::new(err)))?),
             None => Ok(Self::default()),
         }
     }
+}
+
+// TODO work out how to deal with bitsets in rust, maybe https://docs.rs/bitflags/latest/bitflags/ ?
+#[repr(u32)]
+pub enum TlvKeyFlags {
+    // TypeMask = 0x000f,
+    TypePublicOnly = 0x0001,
+    TypeFull = 0x0002,
+    DistribPublish = 0x0020,
+    DistribAdmin = 0x0040,
+    DistribIdentity = 0x0080,
+    // DistribMask = 0x00f0,
 }
 
 // class RsTlvRSAKey: public RsTlvItem
@@ -78,12 +127,12 @@ impl FromSql for TlvKeySignatureSet {
 //     RsTlvBinaryData keyData; 	// Mandatory :
 // };
 
-#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize, Hash, Clone)]
 pub struct TlvRSAKeyInner {
-    pub key_id: Tlv<TLV_TYPE_STR_KEYID, GxsId>, // Mandatory :
-    pub key_flags: u32,                         // Mandatory ;
-    pub start_ts: u32,                          // Mandatory :
-    pub end_ts: u32,                            // Mandatory :
+    pub key_id: KeyId,                                  // Mandatory :
+    pub key_flags: u32,                                 // Mandatory ;
+    pub start_ts: u32,                                  // Mandatory :
+    pub end_ts: u32,                                    // Mandatory :
     pub key_data: TlvBinaryData<TLV_TYPE_KEY_EVP_PKEY>, // Mandatory :
 }
 type TlvRSAKey = Tlv<TLV_TYPE_SECURITY_KEY, TlvRSAKeyInner>;
@@ -121,9 +170,9 @@ pub type TlvPublicRSAKey = TlvRSAKey;
 
 #[derive(Debug, Default)]
 pub struct TlvSecurityKeySet {
-    group_id: StringTagged<TLV_TYPE_STR_GROUPID>,
-    public_keys: HashSet<TlvPublicRSAKey>,
-    private_keys: HashSet<TlvPrivateRSAKey>,
+    pub group_id: StringTagged<TLV_TYPE_STR_GROUPID>,
+    pub public_keys: HashSet<TlvPublicRSAKey>,
+    pub private_keys: HashSet<TlvPrivateRSAKey>,
 }
 
 // neet do manually implement TlvSecurityKeySet since both member `public_keys` and `private_keys` cannot be distingquised once serialized
@@ -135,13 +184,13 @@ impl Serialize for TlvSecurityKeySet {
     {
         let mut bytes = vec![];
 
-        bytes.extend(to_retroshare_wire(&self.group_id).expect("failed to serialize"));
+        bytes.extend(to_retroshare_wire_result(&self.group_id).expect("failed to serialize"));
 
         for pub_key in &self.public_keys {
-            bytes.extend(to_retroshare_wire(pub_key).expect("failed to serialize"));
+            bytes.extend(to_retroshare_wire_result(pub_key).expect("failed to serialize"));
         }
         for priv_key in &self.private_keys {
-            bytes.extend(to_retroshare_wire(priv_key).expect("failed to serialize"));
+            bytes.extend(to_retroshare_wire_result(priv_key).expect("failed to serialize"));
         }
 
         let mut ser = vec![];
@@ -182,13 +231,14 @@ impl<'de> Deserialize<'de> for TlvSecurityKeySet {
 
                 let mut bytes: Vec<_> = v[6..len].into();
 
-                let group_id = from_retroshare_wire(&mut bytes).expect("failed to deserialize");
+                let group_id =
+                    from_retroshare_wire_result(&mut bytes).expect("failed to deserialize");
                 let mut private_keys = HashSet::new();
                 let mut public_keys = HashSet::new();
 
                 while !bytes.is_empty() {
                     let key: TlvRSAKey =
-                        from_retroshare_wire(&mut bytes).expect("failed to deserialize");
+                        from_retroshare_wire_result(&mut bytes).expect("failed to deserialize");
                     match key.key_flags & RSTLV_KEY_TYPE_MASK {
                         RSTLV_KEY_TYPE_PUBLIC_ONLY => {
                             public_keys.insert(key);
@@ -218,7 +268,7 @@ impl<'de> Deserialize<'de> for TlvSecurityKeySet {
 impl FromSql for TlvSecurityKeySet {
     fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
         let mut bytes = value.as_bytes()?.into();
-        let obj = from_retroshare_wire(&mut bytes)
+        let obj = from_retroshare_wire_result(&mut bytes)
             .map_err(|err| rusqlite::types::FromSqlError::Other(Box::new(err)))?;
         Ok(obj)
     }

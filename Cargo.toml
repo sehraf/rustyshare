@@ -6,7 +6,6 @@ edition = "2021"
 
 [features]
 default = ["webui_actix"]
-webui_rocket = ["rocket", "rocket_contrib"]
 webui_actix = ["actix-web", "actix-files", "mime"]
 
 [dependencies]
@@ -29,12 +28,10 @@ log = "0.4"
 # env_logger = "0.9"
 flexi_logger = { version = "0.22", features = ["use_chrono_for_offset"] }
 
+# Tokio debugging
+# console-subscriber = "0.1"
+
 # WebUI
-rocket = { version = "0.4.10", optional = true }
-rocket_contrib = { version = "0.4.10", default-features = false, features = [
-    "serve",
-    "json",
-], optional = true }
 actix-web = { version = "4.0", optional = true }
 actix-files = { version = "0.6", optional = true }
 mime = { version = "0.3", optional = true }

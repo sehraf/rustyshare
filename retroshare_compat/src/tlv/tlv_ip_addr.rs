@@ -21,6 +21,7 @@ impl Serialize for TlvIpAddress {
         let mut ser = vec![];
         // tag
         write_u16(&mut ser, TLV_IP_ADDR_TAG);
+        // len is written inside the match
 
         match self.0 {
             s @ _ if s == TlvIpAddress::default().0 => {
@@ -221,7 +222,7 @@ mod test_tlv_ip {
 
     use crate::{
         read_u16, read_u32, read_u64,
-        serde::{from_retroshare_wire, to_retroshare_wire},
+        serde::{from_retroshare_wire_result, to_retroshare_wire_result},
         tlv::{
             tlv_ip_addr::{
                 TlvIpAddress, TlvIpAddressInfo, TLV_IP_ADDR_INFO, TLV_IP_ADDR_SET_TAG,
@@ -298,7 +299,7 @@ mod test_tlv_ip {
     #[test]
     fn test_tlv_ip_empty() {
         let orig = TlvIpAddress::default();
-        let mut ser = to_retroshare_wire(&orig).unwrap();
+        let mut ser = to_retroshare_wire_result(&orig).unwrap();
 
         let expected = hex::decode("107200000006").unwrap();
         assert_eq!(ser, expected);
@@ -310,7 +311,7 @@ mod test_tlv_ip {
         let de_old = read_tlv_ip_addr(&mut ser.clone());
         assert_eq!(orig.0, de_old);
 
-        let de = from_retroshare_wire(&mut ser).unwrap();
+        let de = from_retroshare_wire_result(&mut ser).unwrap();
         assert_eq!(orig, de);
     }
 
@@ -318,7 +319,7 @@ mod test_tlv_ip {
     fn test_tlv_ip_v4() {
         let orig: TlvIpAddress =
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080).into();
-        let mut ser = to_retroshare_wire(&orig).unwrap();
+        let mut ser = to_retroshare_wire_result(&orig).unwrap();
 
         let expected = hex::decode("10720000001200850000000c0100007f901f").unwrap();
         assert_eq!(ser, expected);
@@ -330,7 +331,7 @@ mod test_tlv_ip {
         let de_old = read_tlv_ip_addr(&mut ser.clone());
         assert_eq!(orig.0, de_old);
 
-        let de = from_retroshare_wire(&mut ser).unwrap();
+        let de = from_retroshare_wire_result(&mut ser).unwrap();
         assert_eq!(orig, de);
     }
 
@@ -341,7 +342,7 @@ mod test_tlv_ip {
             8080,
         )
         .into();
-        let mut ser = to_retroshare_wire(&orig).unwrap();
+        let mut ser = to_retroshare_wire_result(&orig).unwrap();
 
         let expected =
             hex::decode("10720000001e008600000018000a000b000c000d000e000f00090008901f").unwrap();
@@ -354,7 +355,7 @@ mod test_tlv_ip {
         let de_old = read_tlv_ip_addr(&mut ser.clone());
         assert_eq!(orig.0, de_old);
 
-        let de = from_retroshare_wire(&mut ser).unwrap();
+        let de = from_retroshare_wire_result(&mut ser).unwrap();
         assert_eq!(orig, de);
     }
 
@@ -381,7 +382,7 @@ mod test_tlv_ip {
                 source: 0x42,
             },
         };
-        let mut ser = to_retroshare_wire(&orig).unwrap();
+        let mut ser = to_retroshare_wire_result(&orig).unwrap();
 
         let expected =
             hex::decode("10700000002410720000001200850000000c0100007f901f133713381339133000000042")
@@ -391,7 +392,7 @@ mod test_tlv_ip {
         let de_old = read_tlv_ip_address_info(&mut ser.clone());
         assert_eq!(orig, de_old);
 
-        let de = from_retroshare_wire(&mut ser).unwrap();
+        let de = from_retroshare_wire_result(&mut ser).unwrap();
         assert_eq!(orig, de);
     }
 
@@ -441,7 +442,7 @@ mod test_tlv_ip {
                 source: 0x42,
             },
         });
-        let mut ser = to_retroshare_wire(&orig).unwrap();
+        let mut ser = to_retroshare_wire_result(&orig).unwrap();
 
         let expected = hex::decode(
             "10710000002a10700000002410720000001200850000000c0100007f901f133713381339133000000042",
@@ -456,7 +457,7 @@ mod test_tlv_ip {
         let de_old = read_tlv_ip_addr_set(&mut ser.clone());
         assert_eq!(orig, de_old);
 
-        let de = from_retroshare_wire(&mut ser).unwrap();
+        let de = from_retroshare_wire_result(&mut ser).unwrap();
         assert_eq!(orig, de);
     }
 }

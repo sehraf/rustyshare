@@ -1,16 +1,16 @@
 use async_trait::async_trait;
 use log::{debug, info};
 use retroshare_compat::{
-    serde::{from_retroshare_wire, to_retroshare_wire},
+    serde::{from_retroshare_wire_result, to_retroshare_wire_result},
     services::status::{StatusItem, StatusValue},
 };
 use std::time::SystemTime;
 
 use crate::{
     handle_packet,
-    parser::{headers::ServiceHeader, Packet},
+    low_level_parsing::{headers::ServiceHeader, Packet},
     services::{HandlePacketResult, Service},
-    utils::simple_stats::StatsCollection,
+    utils::{simple_stats::StatsCollection, Timers},
 };
 
 use super::ServiceType;
@@ -39,7 +39,7 @@ impl Status {
         // let _ts = Duration::seconds(read_u32(&mut packet.payload) as i64);
         // let status = StatusValue::from(read_u32(&mut packet.payload));
         let item: StatusItem =
-            from_retroshare_wire(&mut packet.payload).expect("failed to deserialize");
+            from_retroshare_wire_result(&mut packet.payload).expect("failed to deserialize");
         info!("[status] received status {}", item.status);
 
         handle_packet!()
@@ -58,7 +58,7 @@ impl Service for Status {
         self.handle_incoming(&packet.header.into(), packet)
     }
 
-    fn tick(&mut self, _stats: &mut StatsCollection) -> Option<Vec<Packet>> {
+    async fn tick(&mut self, _stats: &mut StatsCollection, _timers: &mut Timers) -> Option<Vec<Packet>> {
         if !self.sent {
             self.sent = true;
 
@@ -78,7 +78,7 @@ impl Service for Status {
 
             // assert_eq!(offset, payload.len());
             // assert_eq!(offset, header.get_payload_size());
-            let payload = to_retroshare_wire(&StatusItem {
+            let payload = to_retroshare_wire_result(&StatusItem {
                 send_time: SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .expect("Time went backwards")

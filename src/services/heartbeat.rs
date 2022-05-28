@@ -1,37 +1,38 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use log::debug;
 
 use crate::{
     handle_packet,
-    parser::{
+    low_level_parsing::{
         headers::{Header, ServiceHeader},
         Packet,
     },
     services::{HandlePacketResult, Service},
-    utils::simple_stats::StatsCollection,
+    utils::{simple_stats::StatsCollection, Timer, Timers},
 };
 
 use super::ServiceType;
 
 const HEARTBEAT_SUB_SERVICE: u8 = 0x01;
 
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+const HEARTBEAT_INTERVAL: (&str, Duration) = ("heartbeat", Duration::from_secs(5));
 const HEARTBEAT_PACKET: Header = Header::Service {
     service: ServiceType::Heartbeat,
     sub_type: HEARTBEAT_SUB_SERVICE,
     size: 8,
 };
-pub struct Heartbeat {
-    last_send: Instant,
-}
+pub struct Heartbeat();
 
 impl Heartbeat {
-    pub fn new() -> Heartbeat {
-        Heartbeat {
-            last_send: Instant::now(),
-        }
+    pub fn new(timers: &mut Timers) -> Heartbeat {
+        timers.insert(
+            HEARTBEAT_INTERVAL.0.into(),
+            Timer::new(HEARTBEAT_INTERVAL.1),
+        );
+
+        Heartbeat()
     }
 
     pub fn handle_incoming(&self, header: &ServiceHeader, packet: Packet) -> HandlePacketResult {
@@ -56,10 +57,22 @@ impl Service for Heartbeat {
         self.handle_incoming(&packet.header.into(), packet)
     }
 
-    fn tick(&mut self, _stats: &mut StatsCollection) -> Option<Vec<Packet>> {
-        if self.last_send.elapsed() >= HEARTBEAT_INTERVAL {
-            self.last_send = Instant::now();
+    async fn tick(
+        &mut self,
+        _stats: &mut StatsCollection,
+        timers: &mut Timers,
+    ) -> Option<Vec<Packet>> {
+        // if self.last_send.elapsed() >= HEARTBEAT_INTERVAL {
+        //     self.last_send = Instant::now();
 
+        //     let packet = Packet::new_without_location(HEARTBEAT_PACKET, vec![]);
+        //     return Some(vec![packet]);
+        // }
+        if timers
+            .get_mut(HEARTBEAT_INTERVAL.0.into())
+            .unwrap()
+            .expired()
+        {
             let packet = Packet::new_without_location(HEARTBEAT_PACKET, vec![]);
             return Some(vec![packet]);
         }

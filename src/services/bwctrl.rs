@@ -14,9 +14,9 @@ use crate::{
         intercom::{Intercom, PeerState, PeerUpdate},
         DataCore,
     },
-    parser::{headers::ServiceHeader, Packet},
+    low_level_parsing::{headers::ServiceHeader, Packet},
     services::{HandlePacketResult, Service},
-    utils::{self, simple_stats::StatsCollection},
+    utils::{self, simple_stats::StatsCollection, Timers},
 };
 
 use super::ServiceType;
@@ -41,8 +41,7 @@ impl BwCtrl {
     ) -> HandlePacketResult {
         assert_eq!(header.sub_type, BWCTRL_SUB_TYPE);
 
-        let item: BwCtrlAllowedItem =
-            from_retroshare_wire(&mut packet.payload).expect("failed to deserialize");
+        let item: BwCtrlAllowedItem = from_retroshare_wire(&mut packet.payload);
 
         debug!(
             "[BwCtrl] received bandwidth limit of {}/s from {}",
@@ -68,14 +67,14 @@ impl Service for BwCtrl {
         self.handle_incoming(&packet.header.into(), packet)
     }
 
-    fn tick(&mut self, _stats: &mut StatsCollection) -> Option<Vec<Packet>> {
+    async fn tick(&mut self, _stats: &mut StatsCollection, _timers: &mut Timers) -> Option<Vec<Packet>> {
         let mut out: Vec<Packet> = vec![];
 
         while let Ok(cmd) = self.events.try_recv() {
             match cmd {
                 Intercom::PeerUpdate(PeerUpdate::Status(PeerState::Connected(loc, _addr))) => {
                     let item = BwCtrlAllowedItem { 0: 1_000_000 }; // bytes/sec
-                    let payload = to_retroshare_wire(&item).expect("failed to serialize");
+                    let payload = to_retroshare_wire(&item);
 
                     let packet = Packet::new(
                         ServiceHeader::new(ServiceType::BwCtrl.into(), BWCTRL_SUB_TYPE, &payload)

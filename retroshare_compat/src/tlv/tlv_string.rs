@@ -11,12 +11,15 @@ use super::TLV_HEADER_SIZE;
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct StringTagged<const TAG: u16>(String);
 
-impl<const TAG: u16, T> From<T> for StringTagged<TAG>
-where
-    T: AsRef<str>,
-{
-    fn from(s: T) -> Self {
-        Self(String::from(s.as_ref()))
+impl<const TAG: u16> From<String> for StringTagged<TAG> {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl<const TAG: u16> From<&str> for StringTagged<TAG> {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
     }
 }
 
@@ -29,6 +32,24 @@ impl<const TAG: u16> From<StringTagged<TAG>> for String {
 impl<const TAG: u16> Display for StringTagged<TAG> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl<const TAG: u16> AsRef<String> for StringTagged<TAG> {
+    fn as_ref(&self) -> &String {
+        &self.0
+    }
+}
+
+impl<const TAG: u16> AsRef<str> for StringTagged<TAG> {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<const TAG: u16> AsRef<[u8]> for StringTagged<TAG> {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
     }
 }
 
@@ -56,7 +77,7 @@ impl<'de, const TAG: u16> Deserialize<'de> for StringTagged<TAG> {
         impl<'de, const TAG: u16> Visitor<'de> for TaggedStringVisitor<TAG> {
             type Value = StringTagged<TAG>;
 
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 write!(f, "a tagged string")
             }
 
@@ -86,7 +107,7 @@ mod test {
     use serde::{Deserialize, Serialize};
 
     use crate::{
-        serde::{from_retroshare_wire, to_retroshare_wire},
+        serde::{from_retroshare_wire_result, to_retroshare_wire_result},
         tlv::Tlv2,
     };
 
@@ -108,7 +129,7 @@ mod test {
             z: 0xBBBB,
         };
 
-        let mut ser = to_retroshare_wire(&test).expect("failed to serialize");
+        let mut ser = to_retroshare_wire_result(&test).expect("failed to serialize");
 
         let expected = vec![
             0xAA, 0xAA, // a
@@ -119,14 +140,14 @@ mod test {
         ];
         assert_eq!(&ser, &expected);
 
-        let de: Dummy = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let de: Dummy = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(&de.tagged_string.0, &test.tagged_string.0);
     }
 
     #[test]
     fn string_tagged() {
         let tagged_string: StringTagged<0x1337> = "test123".into();
-        let mut ser = to_retroshare_wire(&tagged_string).expect("failed to serialize");
+        let mut ser = to_retroshare_wire_result(&tagged_string).expect("failed to serialize");
 
         let expected = vec![
             0x13, 0x37, // tag
@@ -137,7 +158,7 @@ mod test {
         assert_eq!(&ser, &expected);
 
         let de: StringTagged<0x1337> =
-            from_retroshare_wire(&mut ser).expect("failed to deserialize");
+            from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(&de.0, &tagged_string.0);
     }
 
@@ -151,11 +172,11 @@ mod test {
 
         let expected = hex::decode("13370000000c010203040506").unwrap();
 
-        let mut ser = to_retroshare_wire(&orig).unwrap();
+        let mut ser = to_retroshare_wire_result(&orig).unwrap();
 
         assert_eq!(ser, expected);
 
-        let de: TestType = from_retroshare_wire(&mut ser).unwrap();
+        let de: TestType = from_retroshare_wire_result(&mut ser).unwrap();
 
         assert_eq!(orig, de);
     }

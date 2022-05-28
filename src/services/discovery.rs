@@ -23,9 +23,9 @@ use crate::{
         person::Peer,
         DataCore,
     },
-    parser::{headers::ServiceHeader, Packet},
+    low_level_parsing::{headers::ServiceHeader, Packet},
     services::{HandlePacketResult, Service},
-    utils::simple_stats::StatsCollection,
+    utils::{simple_stats::StatsCollection, Timers},
 };
 
 use super::ServiceType;
@@ -130,8 +130,7 @@ impl Discovery {
                 }
             }
             DISCOVERY_SUB_TYPE_IDENTITY_LIST => {
-                let item: DiscIdentityListItem =
-                    from_retroshare_wire(&mut packet.payload).expect("failed to deserialize");
+                let item: DiscIdentityListItem = from_retroshare_wire(&mut packet.payload);
                 info!("received DiscIdentityListItem: {item}");
             }
             DISCOVERY_SUB_TYPE_PGP_LIST
@@ -164,7 +163,7 @@ impl Discovery {
                     item.pgp_id_set.0.insert(p.get_pgp_id().to_owned());
                 }
 
-                let payload = to_retroshare_wire(&item).expect("failed to serializes");
+                let payload = to_retroshare_wire(&item);
                 let header = ServiceHeader::new(
                     ServiceType::Discovery,
                     DISCOVERY_SUB_TYPE_PGP_LIST,
@@ -207,16 +206,16 @@ impl Service for Discovery {
         self.handle_incoming(&packet.header.into(), packet).await
     }
 
-    fn tick(&mut self, _stats: &mut StatsCollection) -> Option<Vec<Packet>> {
+    async fn tick(&mut self, _stats: &mut StatsCollection, _timers: &mut Timers) -> Option<Vec<Packet>> {
         let mut out: Vec<Packet> = vec![];
 
         while let Ok(cmd) = self.events_rx.try_recv() {
             match cmd {
                 Intercom::PeerUpdate(PeerUpdate::Status(PeerState::Connected(loc, _addr))) => {
-                    let mut payload = vec![];
+                    // let mut payload = vec![];
 
-                    write_rs_disc_contact_item(&mut payload, &self.info);
-
+                    // write_rs_disc_contact_item(&mut payload, &self.info);
+                    let payload = to_retroshare_wire(&self.info);
                     let packet = Packet::new(
                         ServiceHeader::new(
                             ServiceType::Discovery,

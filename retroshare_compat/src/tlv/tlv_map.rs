@@ -22,7 +22,7 @@ use serde::{
 
 use crate::{
     read_u16, read_u32,
-    serde::{from_retroshare_wire, to_retroshare_wire},
+    serde::{from_retroshare_wire_result, to_retroshare_wire_result},
     write_u16, write_u32,
 };
 
@@ -48,7 +48,7 @@ where
 
         for (key, val) in &self.0 {
             let pair: (K, V) = (key.to_owned(), val.to_owned());
-            bytes.extend(to_retroshare_wire(&pair).expect("failed to serialize"));
+            bytes.extend(to_retroshare_wire_result(&pair).expect("failed to serialize"));
         }
 
         let mut ser = vec![];
@@ -98,7 +98,7 @@ where
                 let mut bytes: Vec<_> = v[6..len].into();
                 while !bytes.is_empty() {
                     let pair: (K, V) =
-                        from_retroshare_wire(&mut bytes).expect("failed to deserialize");
+                        from_retroshare_wire_result(&mut bytes).expect("failed to deserialize");
 
                     item.insert(pair.0, pair.1);
                 }
@@ -130,7 +130,7 @@ where
 
         for (key, val) in &self.0 {
             let pair: TlvGenericPairRef<TAG_PAIR, K, V> = (key.to_owned(), val.to_owned()).into();
-            bytes.extend(to_retroshare_wire(&pair).expect("failed to serialize"));
+            bytes.extend(to_retroshare_wire_result(&pair).expect("failed to serialize"));
         }
 
         let mut ser = vec![];
@@ -182,7 +182,7 @@ where
                 let mut bytes: Vec<_> = v[6..len].into();
                 while !bytes.is_empty() {
                     let pair: TlvGenericPairRef<TAG_PAIR, K, V> =
-                        from_retroshare_wire(&mut bytes).expect("failed to deserialize");
+                        from_retroshare_wire_result(&mut bytes).expect("failed to deserialize");
 
                     item.insert(pair.0 .0, pair.0 .1);
                 }

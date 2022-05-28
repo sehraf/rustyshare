@@ -13,8 +13,8 @@ pub mod keyring;
 pub mod peers;
 pub mod serde;
 pub mod services;
-pub mod sqlite;
 pub mod tlv;
+pub mod webui;
 
 // write
 macro_rules! gen_writer {
@@ -49,78 +49,79 @@ gen_reader!(read_u64, u64, 8);
 mod tests_compat {
     use std::collections::HashMap;
 
-    use crate::serde::{from_retroshare_wire, to_retroshare_wire};
+    use crate::serde::{from_retroshare_wire_result, to_retroshare_wire_result};
     use ::serde::{Deserialize, Serialize};
 
     #[test]
     fn test_uints() {
         let u8 = 42 as u8;
-        let mut ser = to_retroshare_wire(&u8).expect("failed to serialize");
+        let mut ser = to_retroshare_wire_result(&u8).expect("failed to serialize");
         // println!("u8: {:02X?}", ser);
         assert_eq!(&ser, &vec![42]);
-        let de: u8 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let de: u8 = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, u8);
 
         let u16 = 42 as u16;
-        let mut ser = to_retroshare_wire(&u16).expect("failed to serialize");
+        let mut ser = to_retroshare_wire_result(&u16).expect("failed to serialize");
         // println!("u16: {:02X?}", ser);
         assert_eq!(&ser, &vec![0, 42]);
-        let de: u16 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let de: u16 = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, u16);
 
         let u32 = 42 as u32;
-        let mut ser = to_retroshare_wire(&u32).expect("failed to serialize");
+        let mut ser = to_retroshare_wire_result(&u32).expect("failed to serialize");
         // println!("u32: {:02X?}", ser);
         assert_eq!(&ser, &vec![0, 0, 0, 42]);
-        let de: u32 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let de: u32 = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, u32);
 
         let u64 = 42 as u64;
-        let mut ser = to_retroshare_wire(&u64).expect("failed to serialize");
+        let mut ser = to_retroshare_wire_result(&u64).expect("failed to serialize");
         // println!("u64: {:02X?}", ser);
         assert_eq!(&ser, &vec![0, 0, 0, 0, 0, 0, 0, 42]);
-        let de: u64 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let de: u64 = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, u64);
     }
 
     #[test]
     fn test_ints() {
         let i8 = -42 as i8;
-        let mut ser = to_retroshare_wire(&i8).expect("failed to serialize");
+        let mut ser = to_retroshare_wire_result(&i8).expect("failed to serialize");
         assert_eq!(&ser, &vec![0xD6]);
-        let de: i8 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let de: i8 = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, i8);
 
         let i16 = -42 as i16;
-        let mut ser = to_retroshare_wire(&i16).expect("failed to serialize");
+        let mut ser = to_retroshare_wire_result(&i16).expect("failed to serialize");
         assert_eq!(&ser, &vec![0xFF, 0xD6]);
-        let de: i16 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let de: i16 = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, i16);
 
         let i32 = -42 as i32;
-        let mut ser = to_retroshare_wire(&i32).expect("failed to serialize");
+        let mut ser = to_retroshare_wire_result(&i32).expect("failed to serialize");
         // println!("i32: {:02X?}", ser);
         assert_eq!(&ser, &vec![0xFF, 0xFF, 0xFF, 0xD6]);
-        let de: i32 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let de: i32 = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, i32);
 
         let i64 = -42 as i64;
-        let mut ser = to_retroshare_wire(&i64).expect("failed to serialize");
+        let mut ser = to_retroshare_wire_result(&i64).expect("failed to serialize");
         assert_eq!(&ser, &vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xD6]);
-        let de: i64 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let de: i64 = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, i64);
     }
 
     #[test]
     fn test_float() {
         let f = 42.420 as f32;
-        let mut ser = to_retroshare_wire(&f).expect("failed to serialize");
-        let de: f32 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let mut ser = to_retroshare_wire_result(&f).expect("failed to serialize");
+        let de: f32 = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, f);
 
         // not implemented
         let f = 42.420 as f64;
-        let mut _ser = to_retroshare_wire(&f).expect_err("this is supposed to be unimplemented");
+        let mut _ser =
+            to_retroshare_wire_result(&f).expect_err("this is supposed to be unimplemented");
         // let de: f64 = from_retroshare_wire(&mut ser).expect("failed to deserialize");
         // assert_eq!(de, f);
     }
@@ -128,8 +129,8 @@ mod tests_compat {
     #[test]
     fn test_string() {
         let foo = String::from("test");
-        let mut ser = to_retroshare_wire(&foo).expect("failed to serialize");
-        let de: String = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let mut ser = to_retroshare_wire_result(&foo).expect("failed to serialize");
+        let de: String = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, foo);
     }
 
@@ -149,25 +150,26 @@ mod tests_compat {
             c: -0x420,
             d: String::from("hello serde"),
         };
-        let mut ser = to_retroshare_wire(&foo).expect("failed to serialize");
+        let mut ser = to_retroshare_wire_result(&foo).expect("failed to serialize");
         // println!("{:02X?}", ser);
-        let de: SerialTest = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let de: SerialTest = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, foo);
     }
 
     #[test]
     fn test_vec() {
         let foo: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9];
-        let mut ser = to_retroshare_wire(&foo).expect("failed to serialize");
-        let de: Vec<u8> = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let mut ser = to_retroshare_wire_result(&foo).expect("failed to serialize");
+        let de: Vec<u8> = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, foo);
     }
 
     #[test]
     fn test_tuple() {
         let foo = (21 as u8, 42, String::from("tuple test"));
-        let mut ser = to_retroshare_wire(&foo).expect("failed to serialize");
-        let de: (u8, i32, String) = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let mut ser = to_retroshare_wire_result(&foo).expect("failed to serialize");
+        let de: (u8, i32, String) =
+            from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, foo);
     }
 
@@ -191,10 +193,10 @@ mod tests_compat {
             "The Adventures of Sherlock Holmes".to_string(),
             "Eye lyked it alot.".to_string(),
         );
-        let mut ser = to_retroshare_wire(&foo).expect("failed to serialize");
+        let mut ser = to_retroshare_wire_result(&foo).expect("failed to serialize");
         // println!("{:02X?}", ser);
         let de: HashMap<String, String> =
-            from_retroshare_wire(&mut ser).expect("failed to deserialize");
+            from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, foo);
     }
 
@@ -237,9 +239,9 @@ mod tests_compat {
             f: map,
             g: 0xAAAAAAAA,
         };
-        let mut ser = to_retroshare_wire(&foo).expect("failed to serialize");
+        let mut ser = to_retroshare_wire_result(&foo).expect("failed to serialize");
         println!("{:02X?}", ser);
-        let de: SerialTest = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let de: SerialTest = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, foo);
     }
 
@@ -249,8 +251,8 @@ mod tests_compat {
         struct Test(u64);
 
         let foo = Test(0x42);
-        let mut ser = to_retroshare_wire(&foo).expect("failed to serialize");
-        let de: Test = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let mut ser = to_retroshare_wire_result(&foo).expect("failed to serialize");
+        let de: Test = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
         assert_eq!(de, foo);
     }
 }

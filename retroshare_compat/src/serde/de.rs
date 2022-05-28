@@ -22,13 +22,20 @@ impl<'de> RetroShareWireDeserializer<'de> {
     }
 }
 
-pub fn from_retroshare_wire<'a, T>(s: &'a mut Vec<u8>) -> Result<T>
+pub fn from_retroshare_wire_result<'a, T>(s: &'a mut Vec<u8>) -> Result<T>
 where
     T: Deserialize<'a>,
 {
     let mut deserializer = RetroShareWireDeserializer::from_retroshare_wire(s);
     let t = T::deserialize(&mut deserializer)?;
     Ok(t)
+}
+
+pub fn from_retroshare_wire<'a, T>(s: &'a mut Vec<u8>) -> T
+where
+    T: Deserialize<'a>,
+{
+    from_retroshare_wire_result(s).expect("failed to deserialize")
 }
 
 impl<'de> RetroShareWireDeserializer<'de> {

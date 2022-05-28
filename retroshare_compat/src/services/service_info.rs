@@ -94,7 +94,7 @@ mod test_tlv_map {
 
     use crate::{
         read_u16, read_u32,
-        serde::{from_retroshare_wire, to_retroshare_wire},
+        serde::{from_retroshare_wire_result, to_retroshare_wire_result},
         services::service_info::TlvServiceInfoMapRef,
         tlv::TLV_HEADER_SIZE,
         write_u16, write_u32,
@@ -128,7 +128,7 @@ mod test_tlv_map {
             // copy data
             let mut val = payload.drain(..len - TLV_HEADER_SIZE).collect();
             let info: RsServiceInfo =
-                from_retroshare_wire(&mut val).expect("failed to deserialise");
+                from_retroshare_wire_result(&mut val).expect("failed to deserialise");
 
             services.insert(servcie_num, info);
 
@@ -165,7 +165,7 @@ mod test_tlv_map {
             write_u32(&mut data, (TLV_HEADER_SIZE + body_size) as u32); // len
 
             // write actual service info
-            let mut val = to_retroshare_wire(service).expect("failed to serialize");
+            let mut val = to_retroshare_wire_result(service).expect("failed to serialize");
             data.append(&mut val);
 
             inner_data.push(data);
@@ -205,7 +205,7 @@ mod test_tlv_map {
         let mut ser_old = write_rs_service_info(&services);
 
         let si: TlvServiceInfoMapRef = services.into();
-        let mut ser = to_retroshare_wire(&si).unwrap();
+        let mut ser = to_retroshare_wire_result(&si).unwrap();
 
         assert_eq!(ser, ser_old);
 
@@ -215,7 +215,7 @@ mod test_tlv_map {
 
         let mut de_old = HashMap::new();
         read_rs_service_info(&mut ser_old, &mut de_old);
-        let de: TlvServiceInfoMapRef = from_retroshare_wire(&mut ser).unwrap();
+        let de: TlvServiceInfoMapRef = from_retroshare_wire_result(&mut ser).unwrap();
 
         assert_eq!(de, si);
         assert_eq!(

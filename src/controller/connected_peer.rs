@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use log::{debug, trace, warn, info};
+use log::{debug, info, trace, warn};
 use retroshare_compat::services::service_info::RsServiceInfo;
 use tokio::{
     io::{self, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -15,13 +15,14 @@ use tokio::{
 
 use crate::{
     error::RsError,
+    low_level_parsing::{
+        headers::{Header, HEADER_SIZE},
+        parser_network::Parser,
+        Packet,
+    },
     model::{
         intercom::{Intercom, PeerState, PeerUpdate},
         location::Location,
-    },
-    parser::{
-        headers::{Header, HEADER_SIZE},
-        Packet, Parser,
     },
     services::{service_info, HandlePacketResult, Services},
     utils::simple_stats::StatsCollection,
@@ -39,7 +40,7 @@ impl ConnectedPeer {
     ) {
         let (mut stream_read, mut stream_write) = split(tls_stream);
 
-        let mut services = Services::get_peer_services();
+        let mut services = Services::get_peer_services().await;
         let mut parser = Parser::new(location.get_location_id());
 
         let mut service_infos = services.get_service_infos();
@@ -83,6 +84,8 @@ impl ConnectedPeer {
                     match res {
                         Ok((header, payload)) => {
                             if let Some(packet) = parser.handle_incoming_packet(header, payload) {
+                                trace!("handling packet {packet:?}");
+
                                 // try to handle local service first
                                 // when no local service is able to handle the packet, send it to the core
                                 match services.handle_packet(packet, false).await {
@@ -131,7 +134,7 @@ impl ConnectedPeer {
                     let mut stats_dummy: StatsCollection = (Instant::now(), HashMap::new());
 
                     // handle service ticks
-                    if let Some(items) = services.tick_all(&mut stats_dummy) {
+                    if let Some(items) = services.tick_all(&mut stats_dummy).await {
                         for mut item in items {
                             if log::log_enabled!(log::Level::Debug) {
                                 // local services only send packets to the connected peer

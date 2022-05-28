@@ -1,18 +1,24 @@
+use getset::Getters;
 use log::{debug, trace, warn};
 use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{mpsc::UnboundedSender, Mutex};
+use tokio::sync::{mpsc::UnboundedSender, Mutex, MutexGuard};
 
-use retroshare_compat::{basics::SslId, events::EventType, gxs::GroupMetaData};
+use retroshare_compat::{basics::SslId, events::EventType, gxs::GxsDatabase};
 
-use crate::{parser::Packet, retroshare_compat::ssl_key::SslKey};
+use crate::{low_level_parsing::Packet, retroshare_compat::ssl_key::SslKey};
 
-use self::{gxs::Gxs, intercom::Intercom, location::Location, person::Peer};
+use self::{
+    intercom::Intercom,
+    location::Location,
+    person::Peer,
+    services::{chat::ChatStore, gxs_id::GxsIdStore},
+};
 
-pub mod gxs;
 pub mod intercom;
 pub mod location;
 pub mod person;
+pub mod services;
 
 pub struct ConnectedPeerEntries(
     pub HashMap<Arc<SslId>, (UnboundedSender<Intercom>, tokio::task::JoinHandle<()>)>,
@@ -24,54 +30,94 @@ impl Default for ConnectedPeerEntries {
     }
 }
 
+#[derive(Debug, Getters)]
+pub struct DataCoreServiceStore {
+    #[getset(get = "pub")]
+    chat: ChatStore,
+    #[getset(get = "pub")]
+    gxs_id: GxsIdStore,
+}
+
+impl DataCoreServiceStore {
+    pub fn new(database: GxsDatabase) -> Self {
+        DataCoreServiceStore {
+            chat: ChatStore::new(),
+            gxs_id: GxsIdStore::new(database),
+        }
+    }
+}
+
 pub struct DataCore {
     own_key_pair: SslKey,
     own_location: Arc<Location>,
 
-    pub event_listener: Mutex<Vec<UnboundedSender<Intercom>>>,
+    event_listener: Mutex<Vec<UnboundedSender<Intercom>>>,
     webui_clients: Mutex<Vec<UnboundedSender<Value>>>,
 
     peers: Vec<Arc<Peer>>,
     locations: Vec<Arc<Location>>,
 
-    gxs: Vec<Mutex<Gxs>>,
-
+    // gxs_dbs: Vec<Mutex<GxsDatabase>>,
+    // gxs_ids: HashMap<GxsId, TlvSecurityKeySet>,
     connected_peers: Mutex<ConnectedPeerEntries>,
+
+    services: DataCoreServiceStore,
 }
 
 impl DataCore {
-    pub fn new(
+    pub async fn new(
         keys: SslKey,
         friends: (Vec<Arc<Peer>>, Vec<Arc<Location>>),
         peer_id: Arc<SslId>,
-        gxs: Vec<Gxs>,
+        gxs_id_db: GxsDatabase,
     ) -> Arc<DataCore> {
-        // let pos = friends
-        //     .1
-        //     .iter()
-        //     .position(|loc| loc.get_location_id() == peer_id)
-        //     .expect("can't find own location!");
-        // let me = friends.1.remove(pos);
         let me = friends
             .1
             .iter()
             .find(|loc| loc.get_location_id() == peer_id)
             .expect("can't find own location!");
 
-        Arc::new(DataCore {
-            own_key_pair: keys,
-            own_location: me.clone(),
+        Arc::new({
+            let mut dc = DataCore {
+                own_key_pair: keys,
+                own_location: me.clone(),
 
-            peers: friends.0,
-            locations: friends.1,
+                peers: friends.0,
+                locations: friends.1,
 
-            event_listener: Mutex::new(vec![]),
-            webui_clients: Mutex::new(vec![]),
+                event_listener: Mutex::new(vec![]),
+                webui_clients: Mutex::new(vec![]),
 
-            gxs: gxs.into_iter().map(|g| Mutex::new(g)).collect(),
+                // gxs_dbs: gxs.into_iter().map(|g| Mutex::new(g)).collect(),
+                // gxs_ids: HashMap::new(),
+                connected_peers: Mutex::new(ConnectedPeerEntries::default()),
 
-            connected_peers: Mutex::new(ConnectedPeerEntries::default()),
+                // services: RwLock::new(DataCoreServiceStore::default()),
+                services: DataCoreServiceStore::new(gxs_id_db),
+            };
+            dc.init().await;
+            dc
         })
+    }
+
+    async fn init(&mut self) {
+        // use retroshare_compat::gxs::GxsType::*;
+
+        // for gxs in &self.gxs_dbs {
+        //     let locked = gxs.lock().await;
+        //     match locked.get_type() {
+        //         Id => {
+        //             // load all IDs
+        //             // TODO make smarter (cache?)
+        //             for entry in locked.get_meta() {
+        //                 let id = entry.group_id;
+        //                 let key = entry.keys;
+        //                 self.gxs_ids.insert(id.into(), key);
+        //             }
+        //         }
+        //         Forum => (),
+        //     }
+        // }
     }
 
     pub fn get_own_location(&self) -> Arc<Location> {
@@ -104,6 +150,10 @@ impl DataCore {
 
     pub async fn events_subscribe(&self, receiver: UnboundedSender<Intercom>) {
         self.event_listener.lock().await.push(receiver);
+    }
+
+    pub async fn get_subscribers(&self) -> MutexGuard<'_, Vec<UnboundedSender<Intercom>>> {
+        self.event_listener.lock().await
     }
 
     pub async fn is_online(&self, peer_id: Arc<SslId>) -> bool {
@@ -154,9 +204,9 @@ impl DataCore {
 
         tx.send(json!({
             "retval":{
-                "errorNumber":0,
-                "errorCategory":"generic",
-                "errorMessage":"Success"
+                "errorNumber": 0,
+                "errorCategory": "generic",
+                "errorMessage": "Success"
             }
         }))
         .expect("failed to send");
@@ -179,15 +229,16 @@ impl DataCore {
         *self.webui_clients.lock().await = ok_clients;
     }
 
-    pub async fn get_identities_summaries(&self) -> Vec<GroupMetaData> {
-        self.gxs
-            .first()
-            .unwrap()
-            .lock()
-            .await
-            .get_meta()
-            .into_iter()
-            .map(|x| x.into())
-            .collect()
+    // pub async fn get_service_data(&self) -> RwLockReadGuard<'_, DataCoreServiceStore> {
+    //     self.services.read().await
+    // }
+
+    pub fn get_service_data(&self) -> &DataCoreServiceStore {
+        &self.services
     }
+
+    // #[allow(unused)]
+    // pub async fn get_service_data_mut(&self) -> RwLockWriteGuard<'_, DataCoreServiceStore> {
+    //     self.services.write().await
+    // }
 }

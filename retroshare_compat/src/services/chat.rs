@@ -1,11 +1,16 @@
 use ::serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
-use crate::tlv::{tlv_string::StringTagged, tlv_keys::TlvKeySignature};
+use crate::{
+    basics::{DistantChatPeerId, DistantChatPeerIdHex, PeerId, PeerIdHex},
+    serde::Toggleable,
+    tlv::{tags::*, tlv_keys::TlvKeySignature, tlv_string::StringTagged},
+    webui::XInt64,
+};
 
 pub type ChatLobbyId = u64;
 pub type ChatLobbyMsgId = u64;
-pub type ChatLobbyNickName = StringTagged<0x0051>;
+pub type ChatLobbyNickName = StringTagged<TLV_TYPE_STR_NAME>;
 
 // // Flags for chat lobbies
 // //
@@ -47,7 +52,7 @@ pub type ChatLobbyFlags = u32; // FIXME
 pub struct ChatMsgItem {
     pub chat_flags: u32,
     pub send_time: u32,
-    pub message: StringTagged<0x0057>,
+    pub message: StringTagged<TLV_TYPE_STR_MSG>,
     #[serde(skip)]
     pub recv_time: u32,
 }
@@ -75,7 +80,7 @@ pub struct ChatLobbyBouncingObject {
     pub publobby_id: ChatLobbyId,
     pub msg_id: ChatLobbyMsgId,
     pub nick: ChatLobbyNickName,
-    pub signature: TlvKeySignature,
+    pub signature: Toggleable<TlvKeySignature>,
 }
 
 // class RsChatLobbyMsgItem: public RsChatMsgItem, public RsChatLobbyBouncingObject
@@ -140,7 +145,7 @@ pub enum ChatLobbyEvent {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatLobbyEventItem {
     pub event_type: ChatLobbyEvent,
-    pub string1: StringTagged<0x0051>,
+    pub string1: StringTagged<TLV_TYPE_STR_NAME>,
     #[serde(rename(serialize = "sendTime", deserialize = "sendTime"))]
     pub send_time: u32,
 
@@ -160,9 +165,9 @@ pub struct VisibleChatLobbyInfo {
     #[serde(rename(serialize = "info.id", deserialize = "info.id"))]
     pub id: ChatLobbyId,
     #[serde(rename(serialize = "info.name", deserialize = "info.name"))]
-    pub name: StringTagged<0x0051>,
+    pub name: StringTagged<TLV_TYPE_STR_NAME>,
     #[serde(rename(serialize = "info.topic", deserialize = "info.topic"))]
-    pub topic: StringTagged<0x0051>,
+    pub topic: StringTagged<TLV_TYPE_STR_NAME>,
     #[serde(rename(serialize = "info.count", deserialize = "info.count"))]
     pub count: u32,
     #[serde(rename(serialize = "info.flags", deserialize = "info.flags"))]
@@ -199,7 +204,7 @@ pub struct ChatLobbyListItem {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatLobbyUnsubscribeItem {
-    pub lobby_id: u64,
+    pub lobby_id: ChatLobbyId,
 }
 
 // class RsChatLobbyConnectChallengeItem: public RsChatItem
@@ -216,7 +221,7 @@ pub struct ChatLobbyUnsubscribeItem {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatLobbyConnectChallengeItem {
-    pub challenge_code: u64,
+    pub challenge_code: ChatLobbyId,
 }
 
 // class RsChatLobbyInviteItem: public RsChatItem
@@ -235,8 +240,8 @@ pub struct ChatLobbyConnectChallengeItem {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatLobbyInviteItem {
     pub lobby_id: ChatLobbyId,
-    pub lobby_name: StringTagged<0x0051>,
-    pub lobby_topic: StringTagged<0x0051>,
+    pub lobby_name: StringTagged<TLV_TYPE_STR_NAME>,
+    pub lobby_topic: StringTagged<TLV_TYPE_STR_NAME>,
     pub lobby_flags: ChatLobbyFlags,
 }
 
@@ -258,7 +263,7 @@ pub struct ChatLobbyInviteItem {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatStatusItem {
     pub flags: u32,
-    pub status_string: StringTagged<0x0057>,
+    pub status_string: StringTagged<TLV_TYPE_STR_MSG>,
 }
 
 // // This class contains avatar images in Qt format.
@@ -302,3 +307,94 @@ pub struct ChatAvatarItem {
 // pub struct PrivateOugoingMapItem {
 //     pub challenge_code: u64,
 // }
+
+// class ChatId : RsSerializable
+// {
+//     // for the very specific case of transfering a status string
+//     // from the chatservice to the gui,
+//     // this defines from which peer the status string came from
+//     RsPeerId broadcast_status_peer_id;
+// private:
+// 	enum Type : uint8_t
+// 	{	TYPE_NOT_SET,
+// 		TYPE_PRIVATE,            // private chat with directly connected friend, peer_id is valid
+// 		TYPE_PRIVATE_DISTANT,    // private chat with distant peer, gxs_id is valid
+// 		TYPE_LOBBY,              // chat lobby id, lobby_id is valid
+// 		TYPE_BROADCAST           // message to/from all connected peers
+// 	};
+
+//     Type type;
+//     RsPeerId peer_id;
+//     DistantChatPeerId distant_chat_id;
+//     ChatLobbyId lobby_id;
+
+// 	// RsSerializable interface
+// public:
+// 	void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext &ctx) {
+// 		RS_SERIAL_PROCESS(broadcast_status_peer_id);
+// 		RS_SERIAL_PROCESS(type);
+// 		RS_SERIAL_PROCESS(peer_id);
+// 		RS_SERIAL_PROCESS(distant_chat_id);
+// 		RS_SERIAL_PROCESS(lobby_id);
+// 	}
+// };
+
+#[repr(u8)]
+#[derive(Debug, Serialize_repr, Deserialize_repr, Clone)]
+pub enum ChatIdType {
+    TypeNotSet = 0,
+    TypePrivate,        // private chat with directly connected friend, peer_id is valid
+    TypePrivateDistant, // private chat with distant peer, gxs_id is valid
+    TypeLobby,          // chat lobby id, lobby_id is valid
+    TypeBroadcast,      // message to/from all connected peers
+}
+
+impl Default for ChatIdType {
+    fn default() -> Self {
+        Self::TypeNotSet
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ChatId {
+    #[serde(default)]
+    pub broadcast_status_peer_id: PeerIdHex,
+    #[serde(rename(serialize = "type", deserialize = "type"))]
+    pub ty: ChatIdType,
+    #[serde(default)]
+    pub peer_id: PeerIdHex,
+    #[serde(default)]
+    pub distant_chat_id: DistantChatPeerIdHex,
+    #[serde(default)]
+    pub lobby_id: XInt64<u64>,
+}
+
+impl From<ChatLobbyId> for ChatId {
+    fn from(lobby_id: ChatLobbyId) -> Self {
+        Self {
+            ty: ChatIdType::TypeLobby,
+            lobby_id: lobby_id.into(),
+            ..Default::default()
+        }
+    }
+}
+
+impl From<PeerId> for ChatId {
+    fn from(peer_id: PeerId) -> Self {
+        Self {
+            ty: ChatIdType::TypePrivate,
+            peer_id: peer_id.into(),
+            ..Default::default()
+        }
+    }
+}
+
+impl From<DistantChatPeerId> for ChatId {
+    fn from(distant_chat_id: DistantChatPeerId) -> Self {
+        Self {
+            ty: ChatIdType::TypePrivateDistant,
+            distant_chat_id: distant_chat_id.into(),
+            ..Default::default()
+        }
+    }
+}
