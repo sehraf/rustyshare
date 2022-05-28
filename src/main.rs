@@ -1,5 +1,3 @@
-#![feature(proc_macro_hygiene, decl_macro)]
-
 use controller::CoreController;
 use flexi_logger::{LevelFilter, LogSpecification};
 use log::warn;
@@ -17,8 +15,9 @@ use ::retroshare_compat::basics::*;
 
 mod controller;
 mod error;
+mod gxs;
+mod low_level_parsing;
 mod model;
-mod parser;
 mod retroshare_compat;
 mod serial_stuff;
 mod services;
@@ -41,9 +40,7 @@ fn read_location_cert(path: &Path) -> Result<X509, io::Error> {
     let mut user_cert = Vec::new();
     file.read_to_end(&mut user_cert)?;
 
-    Ok(
-        openssl::x509::X509::from_pem(&user_cert)?, // , Certificate::from_pem(&user_cert).unwrap(),
-    )
+    Ok(openssl::x509::X509::from_pem(&user_cert)?)
 }
 
 #[allow(unused_braces)]
@@ -142,13 +139,17 @@ async fn main() {
     builder
         // .module("rustyshare::controller::connected_peer", LevelFilter::Debug)
         // .module("rustyshare::controller", LevelFilter::Trace)
+        // .module("rustyshare::gxs", LevelFilter::Trace)
+        // .module("rustyshare::gxs::gxsid", LevelFilter::Trace)
+        // .module("rustyshare::services", LevelFilter::Trace)
         .module("rustyshare::services::heartbeat", LevelFilter::Warn)
         .module("rustyshare::services::bwctrl", LevelFilter::Warn)
-        // .module("rustyshare::services::chat", LevelFilter::Trace)
+        // .module("rustyshare::services::chat", LevelFilter::Debug)
+        .module("rustyshare::services::gxs_id", LevelFilter::Trace)
         // .module("rustyshare::services::turtle", LevelFilter::Trace)
         // .module("sequoia_openpgp", LevelFilter::Trace)
         // .module("actix", LevelFilter::Trace)
-        .module("actix_web::types::json", LevelFilter::Trace)
+        .module("actix_web", LevelFilter::Trace)
         .default(LevelFilter::Info);
     flexi_logger::Logger::with(builder.finalize())
         // .log_to_file(FileSpec::default())
@@ -159,13 +160,16 @@ async fn main() {
         .start()
         .expect("failed to start logger");
 
+    // Tokio debugging
+    // console_subscriber::init();
+
     let rs_base_dir = retroshare_compat::get_base_dir();
 
     // load keyring
     let mut keys = Keyring::new();
     keys.parse(&rs_base_dir);
 
-    let (loc, localtion_path, ssl_key, gxs) = loop {
+    let (loc, localtion_path, ssl_key, (gxs_id_db, _gxs_forum_db)) = loop {
         // pick location
         let loc = match select_location(&rs_base_dir, &keys) {
             Some(a) => a,
@@ -220,7 +224,7 @@ async fn main() {
     let peer_id = Arc::new(SslId(peer_id));
 
     // init data core
-    let data_core = model::DataCore::new(ssl_key, friends, peer_id, gxs);
+    let data_core = model::DataCore::new(ssl_key, friends, peer_id, gxs_id_db).await;
     let own_ips = data_core.get_own_location().get_ips().0.clone(); // TODO
 
     // setup listener
@@ -239,72 +243,15 @@ async fn main() {
     let _addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
 
     // setup webui
-    #[cfg(feature = "webui_actix")]
     let web = webui::actix::run_actix(data_core.clone());
-
-    #[cfg(feature = "webui_rocket")]
-    webui::rocket::start_rocket(data_core.clone());
 
     // enter main loop
     let mut core = CoreController::new(data_core).await;
+    let fut = core.run();
 
-    #[cfg(feature = "webui_actix")]
-    {
-        let fut = core.run();
-        select! {
-            _ = web => {},
-            _ = fut => {},
-        }
+    // run everything
+    select! {
+        _ = web => {},
+        _ = fut => {},
     }
-    #[cfg(not(feature = "webui_actix"))]
-    core.run().await;
-
-    // #######################
-    // old code
-    // #######################
-
-    // let (listener_tx, listener_rx) = mpsc::channel();
-    // let listener = transport::listener::Listener::new(addr, core.get_tx(), listener_rx).unwrap();
-
-    // let mut stats: utils::simple_stats::StatsCollection = (Instant::now(), HashMap::new());
-
-    // // sleep time
-    // let mut now: Instant;
-    // const TARGET_INTERVAL: Duration = Duration::from_millis(25);
-
-    // // stats counter
-    // let mut counter = 0;
-    // const INTERVAL: Duration = Duration::from_secs(2); // every 2 seconds
-    // const MAX_COUNTER: u32 = (INTERVAL.as_micros() / TARGET_INTERVAL.as_micros()) as u32;
-
-    // // tick forever
-    // while core.tick(&mut stats) {
-    //     now = Instant::now();
-
-    //     counter += 1;
-    //     if counter > MAX_COUNTER {
-    //         counter = 0;
-
-    //         utils::simple_stats::print(&stats);
-    //         stats.0 = Instant::now();
-    //         stats.1.clear();
-    //     }
-
-    //     // timing stuff
-    //     // main loop should run every TARGET_INTERVAL
-    //     let loop_duration = Instant::now() - now;
-    //     if loop_duration >= TARGET_INTERVAL {
-    //         continue;
-    //     }
-    //     let sleep_duration = TARGET_INTERVAL - loop_duration;
-    //     // println!("main loop execution took {}us sleeping for {}us", &loop_duration.as_millis(), &sleep_duration.as_millis());
-    //     sleep(sleep_duration);
-    // }
-    // core.run().await;
-
-    // // shutdown listener
-    // listener_tx
-    //     .send(PeerCommand::Thread(PeerThreadCommand::Stop))
-    //     .expect("failed to communicate with listener");
-    // listener.join().unwrap();
 }

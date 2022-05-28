@@ -1,10 +1,17 @@
-use ::serde::{Deserialize, Serialize};
+use ::serde::{
+    de::{DeserializeOwned, Visitor},
+    Deserialize, Deserializer, Serialize, Serializer,
+};
 use std::fmt;
 
 use crate::{
     basics::*,
-    serde::{from_retroshare_wire, to_retroshare_wire},
+    serde::{
+        from_retroshare_wire, from_retroshare_wire_result, to_retroshare_wire,
+        to_retroshare_wire_result,
+    },
     tlv::{
+        tags::*,
         tlv_ip_addr::{TlvIpAddrSet, TlvIpAddress},
         tlv_set::TlvPgpIdSet,
         tlv_string::StringTagged,
@@ -107,32 +114,6 @@ pub struct DiscPgpListItem {
     pub pgp_id_set: TlvPgpIdSet,
 }
 
-// pub fn read_disc_pgp_list_item(data: &mut Vec<u8>) -> DiscPgpListItem {
-//     let mode = read_u32(data);
-//     // let pgp_id_set = TlvPgpIdSet::read(data);
-//     let pgp_id_set = from_retroshare_wire(data).expect("failed to deserialize");
-
-//     let mode = match mode {
-//         0 => GossipDiscoveryPgpListMode::None,
-//         1 => GossipDiscoveryPgpListMode::Friends,
-//         2 => GossipDiscoveryPgpListMode::Getcert,
-//         m => {
-//             panic!("mode {} does not match GossipDiscoveryPgpListMode", m);
-//         }
-//     };
-
-//     DiscPgpListItem { mode, pgp_id_set }
-// }
-
-// pub fn write_disc_pgp_list_item(item: &DiscPgpListItem) -> Vec<u8> {
-//     let mut data = vec![];
-
-//     write_u32(&mut data, item.mode as u32);
-//     data.append(&mut to_retroshare_wire(&item.pgp_id_set).expect("failed to serialize"));
-
-//     data
-// }
-
 // class RsDiscPgpKeyItem: public RsDiscItem
 // {
 // public:
@@ -155,12 +136,6 @@ pub struct DiscPgpListItem {
 // 	unsigned char* bin_data;
 // 	uint32_t bin_len;
 // };
-
-// pub struct RsDiscPgpKeyItem {
-//     pgpKeyId: RsPgpId,
-//     // bin_len: u32, implicit by vec
-//     bin_data: Vec<u8>,
-// }
 
 // class RS_DEPRECATED_FOR(RsDiscPgpKeyItem) RsDiscPgpCertItem: public RsDiscItem
 // {
@@ -227,14 +202,14 @@ pub struct DiscPgpListItem {
 // };
 
 // #[derive(Serialize, Deserialize, Debug)]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct DiscContactItem {
     pub pgp_id: PgpId,
     pub ssl_id: SslId,
 
     // COMMON
-    pub location: StringTagged<0x005c>, // TLV String!
-    pub version: StringTagged<0x005f>,  // TLV String!
+    pub location: StringTagged<TLV_TYPE_STR_LOCATION>, // TLV String!
+    pub version: StringTagged<TLV_TYPE_STR_VERSION>,   // TLV String!
 
     pub net_mode: u32, /* Mandatory */
     pub vs_disc: u16,  /* Mandatory */
@@ -243,23 +218,150 @@ pub struct DiscContactItem {
 
     // #[serde(skip)]
     pub is_hidden: bool, /* not serialised */
-    // HIDDEN.
-    pub hidden_addr: StringTagged<0x0084>, // TLV String!
+
+    // hidden.
+    pub hidden_addr: StringTagged<TLV_TYPE_STR_DOMADDR>, // TLV String!
     pub hidden_port: u16,
 
-    // STANDARD.
-    // not serialized here!
-    pub current_connect_address: TlvIpAddress, // used to check!
-
-    pub local_addr_v4: TlvIpAddress, /* Mandatory */
-    pub ext_addr_v4: TlvIpAddress,   /* Mandatory */
-    pub local_addr_v6: TlvIpAddress, /* Mandatory */
-    pub ext_addr_v6: TlvIpAddress,   /* Mandatory */
-    // current_connect_address is serialized here!
-    pub dyndns: StringTagged<0x0083>, // TLV String!
+    // non hidden
+    pub local_addr_v4: TlvIpAddress,               /* Mandatory */
+    pub ext_addr_v4: TlvIpAddress,                 /* Mandatory */
+    pub local_addr_v6: TlvIpAddress,               /* Mandatory */
+    pub ext_addr_v6: TlvIpAddress,                 /* Mandatory */
+    pub current_connect_address: TlvIpAddress,     // used to check!
+    pub dyndns: StringTagged<TLV_TYPE_STR_DYNDNS>, // TLV String!
 
     pub local_addr_list: TlvIpAddrSet,
     pub ext_addr_list: TlvIpAddrSet,
+}
+
+impl Serialize for DiscContactItem {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut ser = vec![];
+
+        ser.append(&mut to_retroshare_wire(&self.pgp_id));
+        ser.append(&mut to_retroshare_wire(&self.ssl_id));
+        ser.append(&mut to_retroshare_wire(&self.location));
+        ser.append(&mut to_retroshare_wire(&self.version));
+
+        ser.append(&mut to_retroshare_wire(&self.net_mode));
+        ser.append(&mut to_retroshare_wire(&self.vs_disc));
+        ser.append(&mut to_retroshare_wire(&self.vs_dht));
+        ser.append(&mut to_retroshare_wire(&self.last_contact));
+
+        if self.is_hidden {
+            ser.append(&mut to_retroshare_wire(&self.hidden_addr));
+            ser.append(&mut to_retroshare_wire(&self.hidden_port));
+        } else {
+            ser.append(&mut to_retroshare_wire(&self.local_addr_v4.0));
+            ser.append(&mut to_retroshare_wire(&self.ext_addr_v4.0));
+            ser.append(&mut to_retroshare_wire(&self.local_addr_v6.0));
+            ser.append(&mut to_retroshare_wire(&self.ext_addr_v6.0));
+            ser.append(&mut to_retroshare_wire(&self.current_connect_address.0));
+
+            ser.append(&mut to_retroshare_wire(&self.dyndns));
+
+            ser.append(&mut to_retroshare_wire(&self.local_addr_list));
+            ser.append(&mut to_retroshare_wire(&self.ext_addr_list));
+        }
+
+        serializer.serialize_bytes(ser.as_slice())
+    }
+}
+
+impl<'de> Deserialize<'de> for DiscContactItem {
+    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct OwnVisitor();
+
+        impl OwnVisitor {
+            #[inline(always)]
+            fn read_or_default<'de, T>(should_read: bool, mut bytes: &mut Vec<u8>) -> T
+            where
+                T: DeserializeOwned + Default,
+            {
+                if should_read {
+                    from_retroshare_wire(&mut bytes)
+                } else {
+                    Default::default()
+                }
+            }
+        }
+
+        impl<'de> Visitor<'de> for OwnVisitor {
+            type Value = DiscContactItem;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "a DiscContactItem")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: ::serde::de::Error,
+            {
+                let mut bytes = v.to_vec();
+
+                let pgp_id = from_retroshare_wire(&mut bytes);
+                let ssl_id = from_retroshare_wire(&mut bytes);
+                let location = from_retroshare_wire(&mut bytes);
+                let version = from_retroshare_wire(&mut bytes);
+                let net_mode = from_retroshare_wire(&mut bytes);
+                let vs_disc = from_retroshare_wire(&mut bytes);
+                let vs_dht = from_retroshare_wire(&mut bytes);
+                let last_contact = from_retroshare_wire(&mut bytes);
+
+                // check is the entry is for a hidden node or clearnet
+                let is_hidden = read_u16(&mut bytes[..2].to_vec()) == TLV_TYPE_STR_DOMADDR;
+
+                // hidden
+                let hidden_addr = OwnVisitor::read_or_default(is_hidden, &mut bytes);
+                let hidden_port = OwnVisitor::read_or_default(is_hidden, &mut bytes);
+
+                // non hidden
+                let local_addr_v4 = OwnVisitor::read_or_default(!is_hidden, &mut bytes);
+                let ext_addr_v4 = OwnVisitor::read_or_default(!is_hidden, &mut bytes);
+                let local_addr_v6 = OwnVisitor::read_or_default(!is_hidden, &mut bytes);
+                let ext_addr_v6 = OwnVisitor::read_or_default(!is_hidden, &mut bytes);
+                let current_connect_address = OwnVisitor::read_or_default(!is_hidden, &mut bytes);
+                let dyndns = OwnVisitor::read_or_default(!is_hidden, &mut bytes);
+                let local_addr_list = OwnVisitor::read_or_default(!is_hidden, &mut bytes);
+                let ext_addr_list = OwnVisitor::read_or_default(!is_hidden, &mut bytes);
+
+                Ok(DiscContactItem {
+                    pgp_id,
+                    ssl_id,
+                    location,
+                    version,
+                    net_mode,
+                    vs_disc,
+                    vs_dht,
+                    last_contact,
+
+                    is_hidden,
+                    hidden_addr,
+                    hidden_port,
+
+                    local_addr_v4,
+                    ext_addr_v4,
+                    local_addr_v6,
+                    ext_addr_v6,
+                    current_connect_address,
+                    dyndns,
+                    local_addr_list,
+                    ext_addr_list,
+                })
+            }
+        }
+
+        unimplemented!("this implementation is broken!");
+        #[allow(unreachable_code)]
+        _deserializer.deserialize_bytes(OwnVisitor())
+    }
 }
 
 impl fmt::Display for DiscContactItem {
@@ -299,61 +401,83 @@ impl fmt::Display for DiscContactItem {
 pub fn read_rs_disc_contact_item(payload: &mut Vec<u8>) -> DiscContactItem {
     let mut item = DiscContactItem::default();
 
-    item.pgp_id = from_retroshare_wire(payload).unwrap();
-    item.ssl_id = from_retroshare_wire(payload).unwrap();
-    item.location = from_retroshare_wire(payload).unwrap();
-    item.version = from_retroshare_wire(payload).unwrap();
+    item.pgp_id = from_retroshare_wire_result(payload).unwrap();
+    item.ssl_id = from_retroshare_wire_result(payload).unwrap();
+    item.location = from_retroshare_wire_result(payload).unwrap();
+    item.version = from_retroshare_wire_result(payload).unwrap();
 
-    item.net_mode = from_retroshare_wire(payload).unwrap();
-    item.vs_disc = from_retroshare_wire(payload).unwrap();
-    item.vs_dht = from_retroshare_wire(payload).unwrap();
-    item.last_contact = from_retroshare_wire(payload).unwrap();
+    item.net_mode = from_retroshare_wire_result(payload).unwrap();
+    item.vs_disc = from_retroshare_wire_result(payload).unwrap();
+    item.vs_dht = from_retroshare_wire_result(payload).unwrap();
+    item.last_contact = from_retroshare_wire_result(payload).unwrap();
 
     // check is the entry is for a hidden node or clearnet
     let mut copy = payload[..2].to_vec();
-    if read_u16(&mut copy) == 0x0084 {
-        item.hidden_addr = from_retroshare_wire(payload).unwrap();
-        item.hidden_port = from_retroshare_wire(payload).unwrap();
+    if read_u16(&mut copy) == TLV_TYPE_STR_DOMADDR {
+        item.hidden_addr = from_retroshare_wire_result(payload).unwrap();
+        item.hidden_port = from_retroshare_wire_result(payload).unwrap();
     } else {
-        item.local_addr_v4 = from_retroshare_wire(payload).unwrap();
-        item.ext_addr_v4 = from_retroshare_wire(payload).unwrap();
-        item.local_addr_v6 = from_retroshare_wire(payload).unwrap();
-        item.ext_addr_v6 = from_retroshare_wire(payload).unwrap();
-        item.current_connect_address = from_retroshare_wire(payload).unwrap();
-        item.dyndns = from_retroshare_wire(payload).unwrap();
+        item.local_addr_v4 = from_retroshare_wire_result(payload).unwrap();
+        item.ext_addr_v4 = from_retroshare_wire_result(payload).unwrap();
+        item.local_addr_v6 = from_retroshare_wire_result(payload).unwrap();
+        item.ext_addr_v6 = from_retroshare_wire_result(payload).unwrap();
+        item.current_connect_address = from_retroshare_wire_result(payload).unwrap();
+        item.dyndns = from_retroshare_wire_result(payload).unwrap();
 
-        item.local_addr_list = from_retroshare_wire(payload).unwrap();
-        item.ext_addr_list = from_retroshare_wire(payload).unwrap();
+        item.local_addr_list = from_retroshare_wire_result(payload).unwrap();
+        item.ext_addr_list = from_retroshare_wire_result(payload).unwrap();
     }
 
     item
 }
 
 pub fn write_rs_disc_contact_item(payload: &mut Vec<u8>, item: &DiscContactItem) {
-    payload.append(&mut to_retroshare_wire(&item.pgp_id).expect("failed to serialize"));
-    payload.append(&mut to_retroshare_wire(&item.ssl_id).expect("failed to serialize"));
-    payload.append(&mut to_retroshare_wire(&item.location).expect("failed to serialize"));
-    payload.append(&mut to_retroshare_wire(&item.version).expect("failed to serialize"));
+    payload.append(&mut to_retroshare_wire_result(&item.pgp_id).expect("failed to serialize"));
+    payload.append(&mut to_retroshare_wire_result(&item.ssl_id).expect("failed to serialize"));
+    payload.append(&mut to_retroshare_wire_result(&item.location).expect("failed to serialize"));
+    payload.append(&mut to_retroshare_wire_result(&item.version).expect("failed to serialize"));
 
-    payload.append(&mut to_retroshare_wire(&item.net_mode).expect("failed to serialize"));
-    payload.append(&mut to_retroshare_wire(&item.vs_disc).expect("failed to serialize"));
-    payload.append(&mut to_retroshare_wire(&item.vs_dht).expect("failed to serialize"));
-    payload.append(&mut to_retroshare_wire(&item.last_contact).expect("failed to serialize"));
+    payload.append(&mut to_retroshare_wire_result(&item.net_mode).expect("failed to serialize"));
+    payload.append(&mut to_retroshare_wire_result(&item.vs_disc).expect("failed to serialize"));
+    payload.append(&mut to_retroshare_wire_result(&item.vs_dht).expect("failed to serialize"));
+    payload
+        .append(&mut to_retroshare_wire_result(&item.last_contact).expect("failed to serialize"));
 
     // TODO add support for hidden nodes
+    if item.is_hidden {
+        payload.append(
+            &mut to_retroshare_wire_result(&item.hidden_addr).expect("failed to serialize"),
+        );
+        payload.append(
+            &mut to_retroshare_wire_result(&item.hidden_port).expect("failed to serialize"),
+        );
+    } else {
+        payload.append(
+            &mut to_retroshare_wire_result(&item.local_addr_v4.0).expect("failed to serialize"),
+        );
+        payload.append(
+            &mut to_retroshare_wire_result(&item.ext_addr_v4.0).expect("failed to serialize"),
+        );
+        payload.append(
+            &mut to_retroshare_wire_result(&item.local_addr_v6.0).expect("failed to serialize"),
+        );
+        payload.append(
+            &mut to_retroshare_wire_result(&item.ext_addr_v6.0).expect("failed to serialize"),
+        );
+        payload.append(
+            &mut to_retroshare_wire_result(&item.current_connect_address.0)
+                .expect("failed to serialize"),
+        );
 
-    payload.append(&mut to_retroshare_wire(&item.local_addr_v4.0).expect("failed to serialize"));
-    payload.append(&mut to_retroshare_wire(&item.ext_addr_v4.0).expect("failed to serialize"));
-    payload.append(&mut to_retroshare_wire(&item.local_addr_v6.0).expect("failed to serialize"));
-    payload.append(&mut to_retroshare_wire(&item.ext_addr_v6.0).expect("failed to serialize"));
-    payload.append(
-        &mut to_retroshare_wire(&item.current_connect_address.0).expect("failed to serialize"),
-    );
+        payload.append(&mut to_retroshare_wire_result(&item.dyndns).expect("failed to serialize"));
 
-    payload.append(&mut to_retroshare_wire(&item.dyndns).expect("failed to serialize"));
-
-    payload.append(&mut to_retroshare_wire(&item.local_addr_list).expect("failed to serialize"));
-    payload.append(&mut to_retroshare_wire(&item.ext_addr_list).expect("failed to serialize"));
+        payload.append(
+            &mut to_retroshare_wire_result(&item.local_addr_list).expect("failed to serialize"),
+        );
+        payload.append(
+            &mut to_retroshare_wire_result(&item.ext_addr_list).expect("failed to serialize"),
+        );
+    }
 }
 
 // class RsDiscIdentityListItem: public RsDiscItem
@@ -380,5 +504,54 @@ impl fmt::Display for DiscIdentityListItem {
             write!(f, "{}", hex::encode(id.0))?;
         }
         write!(f, "]")
+    }
+}
+
+#[cfg(test)]
+mod test_discovery {
+    use crate::{
+        serde::{from_retroshare_wire, to_retroshare_wire},
+        services::discovery::read_rs_disc_contact_item,
+    };
+
+    use super::{write_rs_disc_contact_item, DiscContactItem};
+
+    #[test]
+    #[should_panic]
+    fn test_disc_contact_item() {
+        let orig = DiscContactItem::default();
+
+        let mut ser_old = vec![];
+        write_rs_disc_contact_item(&mut ser_old, &orig);
+        let mut ser = to_retroshare_wire(&orig);
+
+        assert_eq!(ser, ser_old);
+
+        let de_old = read_rs_disc_contact_item(&mut ser);
+
+        let de: DiscContactItem = from_retroshare_wire(&mut ser_old);
+
+        assert_eq!(de, de_old);
+        assert_eq!(de, orig)
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_disc_contact_item_hidden() {
+        let mut orig = DiscContactItem::default();
+        orig.is_hidden = true;
+
+        let mut ser_old = vec![];
+        write_rs_disc_contact_item(&mut ser_old, &orig);
+        let mut ser = to_retroshare_wire(&orig);
+
+        assert_eq!(ser, ser_old);
+
+        let de_old = read_rs_disc_contact_item(&mut ser);
+
+        let de: DiscContactItem = from_retroshare_wire(&mut ser_old);
+
+        assert_eq!(de, de_old);
+        assert_eq!(de, orig)
     }
 }

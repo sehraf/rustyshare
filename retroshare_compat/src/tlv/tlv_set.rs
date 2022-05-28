@@ -7,7 +7,7 @@ use std::{collections::HashSet, fmt, hash::Hash, marker::PhantomData};
 use crate::{
     basics::*,
     read_u16, read_u32,
-    serde::{from_retroshare_wire, to_retroshare_wire},
+    serde::{from_retroshare_wire_result, to_retroshare_wire_result},
     tlv::{tags::*, TLV_HEADER_SIZE},
     write_u16, write_u32,
 };
@@ -25,7 +25,7 @@ where
     where
         S: Serializer,
     {
-        let mut bytes = to_retroshare_wire(&self.0).expect("failed to serialize");
+        let mut bytes = to_retroshare_wire_result(&self.0).expect("failed to serialize");
         // remove length
         let bytes: Vec<_> = bytes.drain(4..).collect();
 
@@ -73,7 +73,7 @@ where
 
                 let mut bytes: Vec<_> = v[6..len].into();
                 while !bytes.is_empty() {
-                    let id: T = from_retroshare_wire(&mut bytes).expect("failed to deserialize");
+                    let id: T = from_retroshare_wire_result(&mut bytes).expect("failed to deserialize");
                     item.insert(id);
                 }
 
@@ -108,7 +108,7 @@ mod tests_tlv {
     use crate::{
         basics::SslId,
         read_u16, read_u32,
-        serde::{from_retroshare_wire, to_retroshare_wire},
+        serde::{from_retroshare_wire_result, to_retroshare_wire_result},
         tlv::tlv_set::TLV_TYPE_PEERSET,
         write_u16, write_u32,
     };
@@ -121,7 +121,7 @@ mod tests_tlv {
 
             // write payload
             for entry in &self.0 {
-                data.append(&mut to_retroshare_wire(entry).expect("failed to serialize ID"));
+                data.append(&mut to_retroshare_wire_result(entry).expect("failed to serialize ID"));
             }
             // create TLV header
             let mut packet: Vec<u8> = vec![];
@@ -140,7 +140,7 @@ mod tests_tlv {
 
             let end = data.len() - (len - TLV_HEADER_SIZE);
             while data.len() > end {
-                let id = from_retroshare_wire(data).expect("failed to read ID");
+                let id = from_retroshare_wire_result(data).expect("failed to read ID");
                 item.0.insert(id);
             }
 
@@ -154,7 +154,7 @@ mod tests_tlv {
         let mut orig = TlvPeerIdSet::default();
         orig.0.insert("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()); // 16 bytes
 
-        let ser = to_retroshare_wire(&orig).expect("failed to serialize");
+        let ser = to_retroshare_wire_result(&orig).expect("failed to serialize");
 
         let mut expected = vec![];
         write_u16(&mut expected, TLV_TYPE_PEERSET);
@@ -186,8 +186,8 @@ mod tests_tlv {
         orig.0.insert("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".into()); // 16 bytes
         orig.0.insert("ffffffffffffffffffffffffffffffff".into()); // 16 bytes
 
-        let mut ser = to_retroshare_wire(&orig).expect("failed to serialize");
-        let de: TlvPeerIdSet = from_retroshare_wire(&mut ser).expect("failed to deserialize");
+        let mut ser = to_retroshare_wire_result(&orig).expect("failed to serialize");
+        let de: TlvPeerIdSet = from_retroshare_wire_result(&mut ser).expect("failed to deserialize");
 
         assert_eq!(orig, de);
     }

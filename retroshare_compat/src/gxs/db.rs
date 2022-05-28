@@ -1,13 +1,75 @@
-use ::serde::{Deserialize, Serialize};
-use rusqlite::Result;
+use std::path::PathBuf;
 
-use crate::tlv::tlv_keys::{TlvKeySignatureSet, TlvSecurityKeySet};
-#[allow(unused_imports)]
+use log::{debug, warn};
+use rusqlite::{Connection, Result};
+use serde::{Deserialize, Serialize};
+
 use crate::{
-    basics::{FileHash, GxsCircleId, GxsGroupId, GxsId, GxsMessageId, PeerId},
+    basics::{
+        FileHash, GxsCircleId, GxsCircleIdHex, GxsGroupId, GxsGroupIdHex, GxsId, GxsIdHex,
+        GxsMessageId, PeerId, PeerIdHex,
+    },
     gen_db_type,
-    sqlite::FromSql,
+    gxs::sqlite::FromSql,
+    tlv::tlv_keys::{TlvKeySignatureSet, TlvSecurityKeySet},
+    webui::XInt64,
 };
+
+#[derive(Debug)]
+pub struct DbConnection {
+    db: Connection,
+}
+
+impl DbConnection {
+    pub fn new(path: PathBuf, passwd: &str) -> Result<Self> {
+        let db = Connection::open(path)?;
+        db.pragma_update(None, "key", passwd)?;
+
+        Ok(DbConnection { db })
+    }
+
+    pub fn get_grp_meta(&self) -> Result<Vec<GxsGrpMetaData>> {
+        let stm =
+            String::from("SELECT ") + &GxsGrpMetaData::get_columns().join(",") + " FROM GROUPS";
+        debug!(
+            "querering {stm} on {:?}",
+            self.db.path().unwrap().file_name()
+        );
+        let mut stm = self.db.prepare(&stm)?;
+        let entries = stm
+            .query_map([], |row| GxsGrpMetaData::from_row(row))?
+            .filter_map(|e| match e {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    warn!("{e:?}");
+                    None
+                }
+            })
+            .collect();
+        Ok(entries)
+    }
+
+    pub fn get_grp_msg(&self) -> Result<Vec<GxsMsgMetaData>> {
+        let stm =
+            String::from("SELECT ") + &GxsMsgMetaData::get_columns().join(",") + " FROM MESSAGES";
+        debug!(
+            "querering {stm} on {:?}",
+            self.db.path().unwrap().file_name()
+        );
+        let mut stm = self.db.prepare(&stm)?;
+        let entries = stm
+            .query_map([], |row| GxsMsgMetaData::from_row(row))?
+            .filter_map(|e| match e {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    warn!("{e:?}");
+                    None
+                }
+            })
+            .collect();
+        Ok(entries)
+    }
+}
 
 // RsGroupMetaData
 // struct RsGroupMetaData : RsSerializable
@@ -57,46 +119,47 @@ use crate::{
 //     RsGxsCircleId mInternalCircle;
 // };
 #[allow(unused)]
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct GroupMetaData {
     #[serde(rename(serialize = "mGroupId", deserialize = "mGroupId"))]
-    group_id: GxsGroupId,
+    pub group_id: GxsGroupIdHex,
     #[serde(rename(serialize = "mGroupName", deserialize = "mGroupName"))]
-    group_name: String,
+    pub group_name: String,
     #[serde(rename(serialize = "mGroupFlags", deserialize = "mGroupFlags"))]
-    group_flags: u32,
+    pub group_flags: u32,
     #[serde(rename(serialize = "mSignFlags", deserialize = "mSignFlags"))]
-    sign_flags: u32,
+    pub sign_flags: u32,
     #[serde(rename(serialize = "mPublishTs", deserialize = "mPublishTs"))]
-    publish_ts: i64,
+    pub publish_ts: XInt64<i64>, // BUG rs uses u32 here but it is a timestamp
     #[serde(rename(serialize = "mAuthorId", deserialize = "mAuthorId"))]
-    author_id: GxsId,
+    pub author_id: GxsIdHex,
     #[serde(rename(serialize = "mCircleId", deserialize = "mCircleId"))]
-    circle_id: GxsCircleId,
+    pub circle_id: GxsCircleIdHex,
     #[serde(rename(serialize = "mCircleType", deserialize = "mCircleType"))]
-    circle_type: u32,
+    pub circle_type: u32,
     #[serde(rename(serialize = "mAuthenFlags", deserialize = "mAuthenFlags"))]
-    authen_flags: u32,
+    pub authen_flags: u32,
     #[serde(rename(serialize = "mParentGrpId", deserialize = "mParentGrpId"))]
-    parent_grp_id: GxsGroupId,
+    pub parent_grp_id: GxsGroupIdHex,
     #[serde(rename(serialize = "mSubscribeFlags", deserialize = "mSubscribeFlags"))]
-    subscribe_flags: u32,
+    pub subscribe_flags: u32,
     #[serde(rename(serialize = "mPop", deserialize = "mPop"))]
-    pop: u32,
+    pub pop: u32,
     #[serde(rename(serialize = "mVisibleMsgCount", deserialize = "mVisibleMsgCount"))]
-    visible_msg_count: u32,
+    pub visible_msg_count: u32,
     #[serde(rename(serialize = "mLastPost", deserialize = "mLastPost"))]
-    last_post: i64,
+    pub last_post: XInt64<i64>,
+    #[serde(skip)]
     #[serde(rename(serialize = "mLastSeen", deserialize = "mLastSeen"))]
-    last_seen: i64,
+    pub last_seen: i64,
     #[serde(rename(serialize = "mGroupStatus", deserialize = "mGroupStatus"))]
-    group_status: u32,
+    pub group_status: u32,
     #[serde(rename(serialize = "mServiceString", deserialize = "mServiceString"))]
-    service_string: String,
+    pub service_string: String,
     #[serde(rename(serialize = "mOriginator", deserialize = "mOriginator"))]
-    originator: PeerId,
+    pub originator: PeerIdHex,
     #[serde(rename(serialize = "mInternalCircle", deserialize = "mInternalCircle"))]
-    internal_circle: GxsCircleId,
+    pub internal_circle: GxsCircleIdHex,
 }
 
 // class RsGxsGrpMetaData
@@ -145,73 +208,6 @@ pub struct GroupMetaData {
 //     RsGxsCircleId mInternalCircle;
 //     RsFileHash mHash;
 // };
-// #[derive(Debug, Default, Serialize, Deserialize)]
-// pub struct GxsGrpMetaData {
-//     #[serde(rename(serialize = "mGroupId", deserialize = "mGroupId"))]
-//     group_id: GxsGroupId,
-//     orig_grp_id: GxsGroupId,
-//     parent_grp_id: GxsGroupId,
-//     group_name: String,
-//     group_flags: u32,
-//     publish_ts: i64,
-//     circle_type: u32,
-//     authen_flags: u32,
-//     author_id: GxsId,
-//     service_string: String,
-//     circle_id: GxsCircleId,
-//     // TODO add type
-//     // signSet: TlvKeySignatureSet,
-//     // keys: TlvSecurityKeySet,
-//     sign_flags: u32,
-//     subscribe_flags: u32,
-//     pop: u32,
-//     visible_msg_count: u32,
-//     last_post: i64,
-//     reputation_cut_off: u32,
-//     grp_size: u32,
-//     group_status: u32,
-//     recv_ts: u32,
-//     originator: PeerId,
-//     internal_circle: GxsCircleId,
-//     hash: FileHash,
-// }
-
-// impl FromSql for GxsGrpMetaData {
-//     // fn get_columns() -> &'static str {
-//     //     "grpId, timeStamp, grpName, lastPost, popularity, msgCount, subscribeFlag, grpStatus, identity, origGrpId, serv_str, flags, authenFlags, signFlags, circleId, circleType, internalCircle, originator, hash, recv_time_stamp, parentGrpOd, rep_cutoff"
-//     // }
-//     fn from_row(row: &rusqlite::Row) -> Result<Self> {
-//         Ok(GxsGrpMetaData {
-//             group_id: row.get(0)?,
-//             publish_ts: row.get(1)?,
-//             group_name: row.get(2)?,
-//             last_post: row.get(3)?,
-//             pop: row.get(4)?,
-//             visible_msg_count: row.get(5)?,
-//             subscribe_flags: row.get(6)?,
-//             group_status: row.get(7)?,
-//             author_id: row.get(8)?,
-//             orig_grp_id: row.get(9)?,
-//             service_string: row.get(10)?,
-//             group_flags: row.get(11)?,
-//             authen_flags: row.get(12)?,
-//             sign_flags: row.get(13)?,
-//             circle_id: row.get(14)?,
-//             circle_type: row.get(15)?,
-//             internal_circle: row.get(16)?,
-//             originator: row.get(17)?,
-//             hash: row.get(18)?,
-//             recv_ts: row.get(19)?,
-//             parent_grp_id: row.get(20)?,
-//             reputation_cut_off: row.get(21)?,
-//             ..Default::default()
-//         })
-//     }
-//     fn get_columns() -> Vec<String> {
-//         let a: String = "grpId, timeStamp, grpName, lastPost, popularity, msgCount, subscribeFlag, grpStatus, identity, origGrpId, serv_str, flags, authenFlags, signFlags, circleId, circleType, internalCircle, originator, hash, recv_time_stamp, parentGrpId, rep_cutoff".into();
-//         a.split(",").map(|s| s.trim().to_owned()).collect()
-//     }
-// }
 
 gen_db_type!(
     GxsGrpMetaData,
@@ -220,7 +216,7 @@ gen_db_type!(
     [parent_grp_id: GxsGroupId, "parentGrpId"],
     [group_name: String, "grpName"],
     [group_flags: u32, "flags"],
-    [publish_ts: i64, "timeStamp"],
+    [publish_ts: i64, "timeStamp"], // BUG rs uses u32 here but it is a timestamp
     [circle_type: u32, "circleType"],
     [authen_flags: u32, "authenFlags"],
     [author_id: GxsId, "identity"],
@@ -236,7 +232,7 @@ gen_db_type!(
     [reputation_cut_off: u32, "rep_cutoff"],
     [grp_size: u32, ""],
     [group_status: u32, "grpStatus"],
-    [recv_ts: i64, "recv_time_stamp"],
+    [recv_ts: i64, "recv_time_stamp"], // BUG rs uses u32 here but it is a timestamp
     [originator: PeerId, "originator"],
     [internal_circle: GxsCircleId, "internalCircle"],
     [hash: FileHash, "hash"],
@@ -245,25 +241,25 @@ gen_db_type!(
 impl From<GxsGrpMetaData> for GroupMetaData {
     fn from(x: GxsGrpMetaData) -> Self {
         GroupMetaData {
-            group_id: x.group_id,
+            group_id: x.group_id.into(),
             group_name: x.group_name,
             group_flags: x.group_flags,
             sign_flags: x.sign_flags,
-            publish_ts: x.publish_ts,
-            author_id: x.author_id,
-            circle_id: x.circle_id,
+            publish_ts: x.publish_ts.into(),
+            author_id: x.author_id.into(),
+            circle_id: x.circle_id.into(),
             circle_type: x.circle_type,
             authen_flags: x.authen_flags,
-            parent_grp_id: x.parent_grp_id,
+            parent_grp_id: x.parent_grp_id.into(),
             subscribe_flags: x.subscribe_flags,
             pop: x.pop,
             visible_msg_count: x.visible_msg_count,
-            last_post: x.last_post,
+            last_post: x.last_post.into(),
             last_seen: 0,
             group_status: x.group_status,
             service_string: x.service_string,
-            originator: x.originator,
-            internal_circle: x.internal_circle,
+            originator: x.originator.into(),
+            internal_circle: x.internal_circle.into(),
             ..Default::default()
         }
     }
@@ -325,4 +321,10 @@ gen_db_type!(
     [recv_ts: i64, "recv_time_stamp"],
     [hash: FileHash, "hash"],
     [validated: bool, ""],
+);
+
+gen_db_type!(
+    GxsDatabaseRelease,
+    [id: u32, "id"],
+    [release: u32, "release"],
 );

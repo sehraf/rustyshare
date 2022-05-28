@@ -1,15 +1,15 @@
 use async_trait::async_trait;
 use log::{debug, info};
 use retroshare_compat::{
-    serde::{from_retroshare_wire, to_retroshare_wire},
+    serde::{from_retroshare_wire_result, to_retroshare_wire_result},
     services::service_info::{RsServiceInfo, TlvServiceInfoMapRef},
 };
 
 use crate::{
     handle_packet,
-    parser::{headers::ServiceHeader, Packet},
+    low_level_parsing::{headers::ServiceHeader, Packet},
     services::{HandlePacketResult, Service},
-    utils::simple_stats::StatsCollection,
+    utils::{simple_stats::StatsCollection, Timers},
 };
 
 use super::ServiceType;
@@ -62,7 +62,7 @@ impl ServiceInfo {
     ) -> HandlePacketResult {
         match header.sub_type {
             SERVICE_INFO_SUB_TYPE => {
-                let services = from_retroshare_wire::<TlvServiceInfoMapRef>(&mut packet.payload)
+                let services = from_retroshare_wire_result::<TlvServiceInfoMapRef>(&mut packet.payload)
                     .expect("failed to deserialize")
                     .0;
 
@@ -88,7 +88,7 @@ impl Service for ServiceInfo {
         self.handle_incoming(&packet.header.into(), packet)
     }
 
-    fn tick(&mut self, _stats: &mut StatsCollection) -> Option<Vec<Packet>> {
+    async fn tick(&mut self, _stats: &mut StatsCollection, _timers: &mut Timers) -> Option<Vec<Packet>> {
         None
     }
 
@@ -99,7 +99,7 @@ impl Service for ServiceInfo {
 
 pub fn gen_service_info(services: &Vec<RsServiceInfo>) -> Packet {
     let services: TlvServiceInfoMapRef = services.to_owned().into();
-    let payload = to_retroshare_wire(&services).expect("failed to serialize");
+    let payload = to_retroshare_wire_result(&services).expect("failed to serialize");
     let header = ServiceHeader::new(ServiceType::ServiceInfo, SERVICE_INFO_SUB_TYPE, &payload);
 
     Packet::new_without_location(header.into(), payload)

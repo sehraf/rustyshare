@@ -1,89 +1,39 @@
-use std::{
-    ops::{Deref, DerefMut},
-    sync::Arc,
+use std::sync::Arc;
+
+use log::{trace, warn};
+use retroshare_compat::basics::SslId;
+
+use crate::{
+    low_level_parsing::{headers::Header, Packet},
+    services::ServiceType,
 };
 
-use headers::*;
-use log::{trace, warn};
-use retroshare_compat::basics::*;
-
-use crate::services::ServiceType;
-
-pub mod headers;
+use super::headers::HEADER_SIZE;
 
 const SLICE_FLAG_START_BIT: u8 = 1 << 0;
 const SLICE_FLAG_END_BIT: u8 = 1 << 1;
 const SLICE_ID_MAX_VALUE: u32 = 1 << 24; // this value is taken from RetroShare
 const SLICE_PREFERED_PACKET_SIZE: usize = 512;
 
-#[derive(Clone, Debug)]
-pub struct PacketInner {
-    pub header: Header,
-    pub payload: Vec<u8>,
-    pub peer_id: Arc<SslId>,
-}
-
-/// Wraps a `PacketInner` in a `Box` to ensure heap usage
-#[derive(Debug)]
-pub struct Packet(Box<PacketInner>);
-
-// impl PacketInner {
-impl Packet {
-    pub fn to_bytes(self) -> Vec<u8> {
-        let mut data: Vec<u8> = vec![];
-        data.extend_from_slice(&self.header.to_bytes());
-        data.extend(self.payload.iter());
-        data
-    }
-
-    pub fn peer_id(&self) -> &Arc<SslId> {
-        &self.peer_id
-    }
-}
-
-impl Packet {
-    pub fn new(header: Header, payload: Vec<u8>, loc: Arc<SslId>) -> Packet {
-        Packet(Box::new(PacketInner {
-            header,
-            payload,
-            peer_id: loc,
-        }))
-    }
-
-    pub fn new_without_location(header: Header, payload: Vec<u8>) -> Packet {
-        Packet::new(header, payload, Arc::new(SslId::default()))
-    }
-
-    /// Used to enforce proper meta data handling.
-    ///
-    /// The core mostly uses this to ensure that it is known from where packets come and where they need to go.
-    pub fn has_location(&self) -> bool {
-        *self.peer_id != SslId::default()
-    }
-}
-
-impl Deref for Packet {
-    type Target = PacketInner;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for Packet {
-    // type Target = PacketInner;
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-// TODO come up with a better way to handle this
-impl Clone for Packet {
-    fn clone(&self) -> Self {
-        Packet(Box::new(self.deref().clone()))
-    }
-}
-
+/// SlicePacket
+///
+/// RetroShare slices larger packets up into smaller ones. The prefered size is 512 bytes.
+/// When a packet (ready to be sent - in other words, with a proper header) is larger, it is split up
+/// and each part is wrapped into a slice packet.
+///
+/// A slice packet has the header type `0x10`, contains a flag, packet id an (payload) size.
+/// The flag indicates if this packet is start `0x01` or end packet `0x02` (packet inbetween have the flag `0x00`).
+/// The packet id identifies slices belonging to the same packet. Ordering is ensured by TCP, there
+/// is no other order mechanism inside the slice packet.
+/// Finally, the (payload) size indicates how much data the *one* slice contains. (Its main purpose is
+/// to calculate the size of the whole slice packet (contrary to the class and service packet - the
+/// size does *not* include the header bytes))
+///
+/// The expected behaviour is that first a slice packet with start flag is received, followed by
+/// any amount of intermediat slice packets (there can be zero intermediates) and finally, a slice packet
+/// with the end flag set.
+/// Their payload is then concatinated in the order of arrival. The resulting packet is a normal network
+/// packet which needs to be parsed again (in other words, it contains a normal packet header).
 struct SlicePacket {
     slice_packet_id: u32,
     payload: Vec<u8>,
@@ -91,6 +41,7 @@ struct SlicePacket {
 
 pub struct Parser {
     incoming_partial_store: Vec<SlicePacket>,
+
     next_id: u32,
     location: Arc<SslId>,
 }
@@ -99,11 +50,18 @@ impl Parser {
     pub fn new(location: Arc<SslId>) -> Parser {
         Parser {
             incoming_partial_store: vec![],
+
             next_id: 0,
             location,
         }
     }
 
+    /// Adds a slice packet to the internal store.
+    ///
+    /// When a start packet is received, a new partial packet is created which accumulates the payloads.
+    /// When a end packet is received, the accumulated payload is stored in a new (network) packet.
+    ///
+    /// Sanity checks are performed.
     fn add_slice(
         &mut self,
         slice_packet_id: u32,
@@ -188,23 +146,29 @@ impl Parser {
         self.incoming_partial_store.remove(index);
     }
 
+    /// Consumes a packet fresh from the network and parses its header.
+    ///
+    /// If it is a service packet, it is wrapped into a `Packet` and returned.
+    ///
+    /// If it is a slice packet, it is added to the internal state. When a end slice is received
+    /// the resulting packet is wrapped into a `Packet` and returned.
+    ///
+    /// A class packet is not expected!
     pub fn handle_incoming_packet(&mut self, header: Header, payload: Vec<u8>) -> Option<Packet> {
         trace!("handling packet {:?}: {:02X?}", header, payload);
         match header {
             Header::Service {
                 service, sub_type, ..
-            } => {
+            } if service == ServiceType::SliceProbe => {
+                // silently drop slice probing packets
+                assert_eq!(sub_type, 0xcc);
+                return None;
+            }
+            Header::Service { service, .. } if service != ServiceType::SliceProbe => {
                 // got Item
-                trace!("item");
-
-                if service == ServiceType::SliceProbe {
-                    // silently drop slice probing packets
-                    assert_eq!(sub_type, 0xcc);
-                    return None;
-                }
+                trace!("Service");
 
                 let packet = Packet::new(header, payload, self.location.clone());
-
                 return Some(packet);
             }
             Header::Slice {
@@ -213,7 +177,7 @@ impl Parser {
                 ..
             } => {
                 // got Slice
-                trace!("slice");
+                trace!("Slice");
 
                 let mut payload = payload;
                 return self.add_slice(slice_packet_id, partial_flags, &mut payload);
@@ -236,6 +200,9 @@ impl Parser {
         id
     }
 
+    /// Consumes a packet and converts it into bytes.
+    ///
+    /// When the resulting (network) packet is too long, it is split up into slice packets.
     pub fn handle_outgoign_packet(&mut self, mut packet: Packet) -> Vec<Vec<u8>> {
         let mut out: Vec<Vec<u8>> = vec![];
 
@@ -243,13 +210,12 @@ impl Parser {
         let packet_size = packet.payload.len();
 
         // simple case: packet fits into the desired size, no splitting necessary
-        if packet_size + headers::HEADER_SIZE < SLICE_PREFERED_PACKET_SIZE {
+        if packet_size + HEADER_SIZE < SLICE_PREFERED_PACKET_SIZE {
             out.push(packet.to_bytes());
         } else {
             // packet is too large, split it
-            let packet_size_first = SLICE_PREFERED_PACKET_SIZE - headers::HEADER_SIZE; // slice header
-            let payload_size_first =
-                SLICE_PREFERED_PACKET_SIZE - headers::HEADER_SIZE - headers::HEADER_SIZE; // slice header + packet header
+            let packet_size_first = SLICE_PREFERED_PACKET_SIZE - HEADER_SIZE; // slice header
+            let payload_size_first = SLICE_PREFERED_PACKET_SIZE - HEADER_SIZE - HEADER_SIZE; // slice header + packet header
             let mut data: Vec<u8> = vec![];
             let slice_id = self.get_next_slice_id();
 
@@ -271,14 +237,15 @@ impl Parser {
             out.push(data);
 
             // now handle the remaining data
-            while packet.payload.len() > SLICE_PREFERED_PACKET_SIZE - headers::HEADER_SIZE {
+            while packet.payload.len() > SLICE_PREFERED_PACKET_SIZE - HEADER_SIZE {
+                // create intermediate packet
                 let mut data: Vec<u8> = vec![];
-                let payload_size_middle = SLICE_PREFERED_PACKET_SIZE - headers::HEADER_SIZE; // slice header
+                let payload_size_middle = SLICE_PREFERED_PACKET_SIZE - HEADER_SIZE; // slice header
 
                 // create middle header
                 let header = Header::Slice {
                     partial_flags: 0,
-                    size: (SLICE_PREFERED_PACKET_SIZE - headers::HEADER_SIZE) as u16,
+                    size: (SLICE_PREFERED_PACKET_SIZE - HEADER_SIZE) as u16,
                     slice_packet_id: slice_id,
                 };
                 // write packet header
@@ -292,7 +259,7 @@ impl Parser {
 
             let mut data: Vec<u8> = vec![];
 
-            // handle end
+            // create end packet
             let header = Header::Slice {
                 partial_flags: SLICE_FLAG_END_BIT,
                 size: packet.payload.len() as u16,
@@ -308,5 +275,81 @@ impl Parser {
         }
 
         out
+    }
+}
+
+#[cfg(test)]
+mod test_slice {
+    use std::sync::Arc;
+
+    use retroshare_compat::basics::SslId;
+
+    use crate::low_level_parsing::{
+        headers::{Header, ServiceHeader, HEADER_SIZE},
+        parser_network::{SLICE_FLAG_END_BIT, SLICE_FLAG_START_BIT},
+    };
+
+    use super::{Parser, SLICE_PREFERED_PACKET_SIZE};
+
+    #[test]
+    fn test_slicing() {
+        const PACKET_EXTRA: usize = 42;
+
+        let large_payload = [0xab; SLICE_PREFERED_PACKET_SIZE * 2 + PACKET_EXTRA].to_vec();
+        let header = ServiceHeader::new(0x13.into(), 0x37, &large_payload);
+        let large_packet =
+            super::Packet::new_without_location(header.to_owned().into(), large_payload);
+        let mut parser = Parser::new(Arc::new(SslId::default()));
+
+        let res = parser.handle_outgoign_packet(large_packet);
+
+        assert_eq!(res.len(), 3);
+
+        let expected: Vec<Vec<u8>> = {
+            // 1st slice
+            let header_1 = Header::Slice {
+                partial_flags: SLICE_FLAG_START_BIT,
+                slice_packet_id: 0,
+                size: (SLICE_PREFERED_PACKET_SIZE - HEADER_SIZE) as u16,
+            }
+            .to_bytes()
+            .to_vec();
+            let mut payload_1 = Into::<Header>::into(header).to_bytes().to_vec();
+            // subtract slice packet header, actual packet header
+            payload_1.extend([0xab; SLICE_PREFERED_PACKET_SIZE - HEADER_SIZE - HEADER_SIZE]);
+
+            // 2nd slice
+            let header_2 = Header::Slice {
+                partial_flags: 0,
+                slice_packet_id: 0,
+                size: (SLICE_PREFERED_PACKET_SIZE - HEADER_SIZE) as u16,
+            }
+            .to_bytes()
+            .to_vec();
+            // subtract slice packet header
+            let payload_2 = [0xab; SLICE_PREFERED_PACKET_SIZE - HEADER_SIZE].to_vec();
+
+            // 3rd slice
+            let header_3 = Header::Slice {
+                partial_flags: SLICE_FLAG_END_BIT,
+                slice_packet_id: 0,
+                size: (PACKET_EXTRA + 2 * HEADER_SIZE + HEADER_SIZE) as u16,
+            }
+            .to_bytes()
+            .to_vec();
+            // remaining: PACKET_EXTRA + two times the slice header + one time the actual packet header
+            let payload_3 = [0xab; PACKET_EXTRA + 2 * HEADER_SIZE + HEADER_SIZE].to_vec();
+
+            vec![
+                header_1.into_iter().chain(payload_1.into_iter()).collect(),
+                header_2.into_iter().chain(payload_2.into_iter()).collect(),
+                header_3.into_iter().chain(payload_3.into_iter()).collect(),
+            ]
+        };
+
+        for i in 0..3 {
+            println!("{i}");
+            assert_eq!(res[i], expected[i]);
+        }
     }
 }

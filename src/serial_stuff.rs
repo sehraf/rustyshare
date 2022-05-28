@@ -5,13 +5,13 @@ use retroshare_compat::{
         RsNodeGroupItem,
     },
     keyring::Keyring,
-    serde::from_retroshare_wire,
+    serde::from_retroshare_wire_result,
 };
 use std::sync::Arc;
 
 use crate::{
     model::{location::Location, person::Peer},
-    parser::headers::{Header, HEADER_SIZE},
+    low_level_parsing::headers::{Header, HEADER_SIZE},
 };
 
 pub fn parse_general_cfg(data: &mut Vec<u8>) -> () {
@@ -41,7 +41,8 @@ pub fn parse_general_cfg(data: &mut Vec<u8>) -> () {
                             // const uint8_t RS_PKT_SUBTYPE_KEY_VALUE = 0x01;
                             0x01 => {
                                 // RsConfigKeyValueSet
-                                let item: ConfigKeyValueSet = from_retroshare_wire(data).unwrap();
+                                let item: ConfigKeyValueSet =
+                                    from_retroshare_wire_result(data).unwrap();
                                 for (key, value) in item.0 {
                                     info!("loaded RsGeneralConfigSerialiser/RsConfigKeyValueSet: {}: {}", key, value);
                                 }
@@ -109,7 +110,8 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
                     match sub_type {
                         // const uint8_t RS_PKT_SUBTYPE_KEY_VALUE = 0x01;
                         0x01 => {
-                            let item: ConfigKeyValueSet = from_retroshare_wire(data).unwrap();
+                            let item: ConfigKeyValueSet =
+                                from_retroshare_wire_result(data).unwrap();
                             for (key, value) in item.0 {
                                 info!("[load_peers] KEY_VALUE {}: {}", key, value);
                             }
@@ -130,7 +132,7 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
                         // const uint8_t RS_PKT_SUBTYPE_PEER_NET              = 0x03;
                         0x3 => {
                             let (pgp_id, location, peer_id, ips) = {
-                                let item: PeerNetItem = from_retroshare_wire(data).unwrap();
+                                let item: PeerNetItem = from_retroshare_wire_result(data).unwrap();
 
                                 (
                                     item.pgp_id,
@@ -183,7 +185,7 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
                         // const uint8_t RS_PKT_SUBTYPE_PEER_PERMISSIONS      = 0x05;
                         0x5 => {
                             let item: PeerServicePermissionItem =
-                                from_retroshare_wire(data).expect("failed to deserialize");
+                                from_retroshare_wire_result(data).expect("failed to deserialize");
                             for entry in item.entries {
                                 info!(
                                     "[load_peers] PEER_PERMISSIONS {}: {:#032b}",
@@ -194,13 +196,13 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
                         // const uint8_t RS_PKT_SUBTYPE_PEER_BANDLIMITS       = 0x06;
                         0x6 => {
                             let entries: PeerBandwidthLimitsItem =
-                                from_retroshare_wire(data).expect("failed to deserialize");
+                                from_retroshare_wire_result(data).expect("failed to deserialize");
                             info!("Bandwidth: {:?}", entries);
                         }
                         // const uint8_t RS_PKT_SUBTYPE_NODE_GROUP            = 0x07;
                         0x07 => {
                             let group: RsNodeGroupItem =
-                                from_retroshare_wire(data).expect("failed to deserialize");
+                                from_retroshare_wire_result(data).expect("failed to deserialize");
                             info!("group info: {:?}", group);
                         }
                         sub_type => {
@@ -236,9 +238,11 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use byteorder::{ByteOrder, NetworkEndian};
 
-    use crate::parser::headers::Header;
+    use crate::low_level_parsing::headers::Header;
 
     fn write_u16(data: &mut Vec<u8>, offset: &mut usize, val: u16) {
         const SIZE: usize = 2;
@@ -365,7 +369,7 @@ mod tests {
         assert_eq!(a, b);
 
         let mut services = Services::new();
-        let rtt = Box::new(Rtt::new());
+        let rtt = Box::new(Rtt::new(&mut HashMap::new()));
         services.add_service(rtt);
         let list = services.get_service_infos();
         let c = crate::services::service_info::gen_service_info(&list).to_bytes();

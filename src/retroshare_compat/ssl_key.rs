@@ -20,11 +20,9 @@ use openssl::{
     // ssl::Ssl,
     x509::X509,
 };
-use retroshare_compat::sqlite::DbConnection;
+use retroshare_compat::gxs::{db::DbConnection, GxsDatabase, GxsType};
 use rustls::{Certificate, PrivateKey};
 use sequoia_openpgp as openpgp;
-
-use crate::model::gxs::{Gxs, GxsType};
 
 /// Simple type wrapper for DER encoded public key
 pub type PublicKeyDer = Vec<u8>;
@@ -115,7 +113,7 @@ impl SslKey {
         pgp: &Cert,
         localtion_path: &path::Path,
         pw: &str,
-    ) -> Result<(SslKey, Vec<Gxs>), std::io::Error> {
+    ) -> Result<(SslKey, (GxsDatabase, GxsDatabase)), std::io::Error> {
         // TODO fix password handling
 
         // decrypt (ssl)key passphrase
@@ -159,13 +157,13 @@ impl SslKey {
         let db = DbConnection::new(full_path, &String::from_utf8_lossy(&password))
             .map_err(|err| warn!("{err}"))
             .unwrap();
-        let gxs_id = Gxs::new(GxsType::Id, db);
+        let gxs_id = GxsDatabase::new(GxsType::Id, db);
 
         let full_path = localtion_path.join("gxs/gxsforums_db");
         let db = DbConnection::new(full_path, &String::from_utf8_lossy(&password))
             .map_err(|err| warn!("{err}"))
             .unwrap();
-        let gxs_forum = Gxs::new(GxsType::Forum, db);
+        let gxs_forum = GxsDatabase::new(GxsType::Forum, db);
 
         // XXX
         // if log::log_enabled!(log::Level::Debug) {
@@ -176,7 +174,7 @@ impl SslKey {
         //     debug!("---");
         // }
 
-        Ok(((user_cert, user_pk).into(), vec![gxs_id, gxs_forum]))
+        Ok(((user_cert, user_pk).into(), (gxs_id, gxs_forum)))
     }
 
     fn decrypt_passphrase(

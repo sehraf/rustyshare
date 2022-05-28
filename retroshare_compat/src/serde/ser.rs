@@ -20,13 +20,20 @@ pub struct RetroShareWireSerializer {
 // By convention, the public API of a Serde serializer is one or more `to_abc`
 // functions such as `to_string`, `to_bytes`, or `to_writer` depending on what
 // Rust types the serializer is able to produce as output.
-pub fn to_retroshare_wire<T>(value: &T) -> Result<Vec<u8>>
+pub fn to_retroshare_wire_result<T>(value: &T) -> Result<Vec<u8>>
 where
     T: Serialize,
 {
     let mut serializer = RetroShareWireSerializer { output: Vec::new() };
     value.serialize(&mut serializer)?;
     Ok(serializer.output)
+}
+
+pub fn to_retroshare_wire<T>(value: &T) -> Vec<u8>
+where
+    T: Serialize,
+{
+    to_retroshare_wire_result(value).expect("failed to serialize")
 }
 
 impl<'a> ser::Serializer for &'a mut RetroShareWireSerializer {

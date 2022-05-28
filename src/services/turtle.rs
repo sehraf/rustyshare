@@ -7,18 +7,19 @@ use std::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
-use retroshare_compat::{basics::SslId, serde::from_retroshare_wire, services::turtle::*};
+use retroshare_compat::{basics::SslId, serde::from_retroshare_wire_result, services::turtle::*};
 
 use crate::{
     handle_packet,
     // error,
     model::{intercom::Intercom, location::Location, DataCore},
-    parser::{headers::ServiceHeader, Packet},
+    low_level_parsing::{headers::ServiceHeader, Packet},
     services::{HandlePacketResult, Service},
     utils::{
         self,
         simple_stats::{StatsCollection, StatsPrinter},
         units::pretty_print_bytes,
+        Timer, Timers,
     },
 };
 
@@ -49,6 +50,9 @@ const TUNNEL_REQUESTS_RESULT_TIME: Duration = Duration::from_secs(20);
 /// maximum life time of an unused tunnel.
 const MAXIMUM_TUNNEL_IDLE_TIME: Duration = Duration::from_secs(60);
 
+// TODO
+const TURTLE_TIMER_MAINTAINANCE: (&str, Duration) = ("maintainance", Duration::from_secs(5));
+
 // stats stuff
 const ENTRY_A: &str = &"times_forwarded";
 const ENTRY_A_FN: StatsPrinter = |data| -> String { format!("{} times", data) };
@@ -66,8 +70,6 @@ pub struct Turtle {
     tunnel_history: RwLock<HashMap<u32, TunnelRequest>>,
     tunnel_active: RwLock<HashMap<u32, TunnelActive>>,
 
-    counter: u8,
-
     stats_forwarded_count: Mutex<i32>,
     stats_forwarded_data: Mutex<i32>,
 }
@@ -75,7 +77,16 @@ pub struct Turtle {
 // TODO handle peers disconnecting
 
 impl Turtle {
-    pub fn new(dc: &Arc<DataCore>, core_tx: UnboundedSender<Intercom>) -> Turtle {
+    pub async fn new(
+        dc: &Arc<DataCore>,
+        core_tx: UnboundedSender<Intercom>,
+        timers: &mut Timers,
+    ) -> Turtle {
+        timers.insert(
+            TURTLE_TIMER_MAINTAINANCE.0.into(),
+            Timer::new(TURTLE_TIMER_MAINTAINANCE.1),
+        );
+
         Turtle {
             core: core_tx,
 
@@ -84,8 +95,6 @@ impl Turtle {
 
             tunnel_history: RwLock::new(HashMap::new()),
             tunnel_active: RwLock::new(HashMap::new()),
-
-            counter: 0,
 
             stats_forwarded_count: Mutex::new(0),
             stats_forwarded_data: Mutex::new(0),
@@ -151,7 +160,7 @@ impl Turtle {
 
         // create a copy for simple replay
         let item: TurtleOpenTunnelItem =
-            from_retroshare_wire(&mut packet.payload.clone()).expect("failed to deserialze");
+            from_retroshare_wire_result(&mut packet.payload.clone()).expect("failed to deserialze");
 
         trace!("[Turtle] received open tunnel request: {item}");
 
@@ -203,7 +212,7 @@ impl Turtle {
     fn handle_tunnel_ok(&self, mut packet: Packet) -> HandlePacketResult {
         // create a copy for simple forward
         let item: TurtleTunnelOkItem =
-            from_retroshare_wire(&mut packet.payload.clone()).expect("failed to deserialze");
+            from_retroshare_wire_result(&mut packet.payload.clone()).expect("failed to deserialze");
 
         trace!("[Turtle] received tunnel ok: {item}");
 
@@ -259,7 +268,7 @@ impl Turtle {
     fn handle_generic_data(&self, mut packet: Packet) -> HandlePacketResult {
         // create a copy for simple forward
         let item: TurtleGenericDataItem =
-            from_retroshare_wire(&mut packet.payload.clone()).expect("failed to deserialze");
+            from_retroshare_wire_result(&mut packet.payload.clone()).expect("failed to deserialze");
 
         trace!("received generic data: {item}");
 
@@ -346,13 +355,21 @@ impl Service for Turtle {
         self.handle_incoming(&packet.header.into(), packet).await
     }
 
-    fn tick(&mut self, stats: &mut StatsCollection) -> Option<Vec<Packet>> {
+    async fn tick(
+        &mut self,
+        stats: &mut StatsCollection,
+        timers: &mut Timers,
+    ) -> Option<Vec<Packet>> {
         // clean up caches
-        const COUNTER_MAX: u8 = 10; // arbitrary
-        self.counter += 1;
-        if self.counter > COUNTER_MAX {
-            self.counter = 0;
-
+        // const COUNTER_MAX: u8 = 10; // arbitrary
+        // self.counter += 1;
+        // if self.counter > COUNTER_MAX {
+        //     self.counter = 0;
+        if timers
+            .get_mut(TURTLE_TIMER_MAINTAINANCE.0.into())
+            .unwrap()
+            .expired()
+        {
             // Do not block! It is not worth blocking the main tick!
             if let Ok(mut history) = self.tunnel_history.try_write() {
                 history.retain(|_, e| e.time.elapsed() < TUNNEL_REQUESTS_LIFE_TIME);

@@ -11,7 +11,7 @@ use serde::{
 
 use crate::{
     read_u16, read_u32,
-    serde::{from_retroshare_wire, to_retroshare_wire},
+    serde::{from_retroshare_wire_result, to_retroshare_wire_result},
     write_u16, write_u32,
 };
 
@@ -30,6 +30,12 @@ pub const TLV_HEADER_SIZE: usize = 6;
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct Tlv<const TAG: u16, T>(pub T);
 
+impl<const TAG: u16, T> Tlv<TAG, T> {
+    pub fn new(t: T) -> Self {
+        Self(t)
+    }
+}
+
 impl<const TAG: u16, T> Serialize for Tlv<TAG, T>
 where
     T: Serialize,
@@ -38,7 +44,7 @@ where
     where
         S: Serializer,
     {
-        let bytes = to_retroshare_wire(&self.0).expect("failed to serialize");
+        let bytes = to_retroshare_wire_result(&self.0).expect("failed to serialize");
 
         let mut ser = vec![];
         write_u16(&mut ser, TAG);
@@ -82,7 +88,7 @@ where
                 assert!(len == v.len());
 
                 let mut bytes = v[6..len].into();
-                let s: T = from_retroshare_wire(&mut bytes).expect("failed to deserialize");
+                let s: T = from_retroshare_wire_result(&mut bytes).expect("failed to deserialize");
 
                 Ok(Tlv(s))
             }
@@ -144,7 +150,7 @@ impl<const TAG: u16, T: Serialize> Serialize for Tlv2<TAG, T> {
     where
         S: Serializer,
     {
-        let mut bytes = to_retroshare_wire(&self.0).expect("failed to serialize");
+        let mut bytes = to_retroshare_wire_result(&self.0).expect("failed to serialize");
 
         // remove length
         // let bytes: Vec<_> = bytes.drain(4..).collect();
@@ -189,7 +195,7 @@ impl<'de, const TAG: u16, T: DeserializeOwned> Deserialize<'de> for Tlv2<TAG, T>
                 write_u32(&mut bytes, (len - TLV_HEADER_SIZE) as u32);
                 bytes.extend_from_slice(&v[6..len]);
 
-                let s = from_retroshare_wire(&mut bytes).expect("failed to deserialize");
+                let s = from_retroshare_wire_result(&mut bytes).expect("failed to deserialize");
 
                 Ok(Tlv2(s))
             }
@@ -227,13 +233,15 @@ impl<const TAG: u16, T> From<T> for Tlv2<TAG, T> {
     }
 }
 
+pub type TlvBinaryData<const T: u16> = Tlv2<T, Vec<u8>>;
+
 #[cfg(test)]
 mod test_tlv {
     use std::collections::HashSet;
 
     use crate::{
         basics::SslId,
-        serde::{from_retroshare_wire, to_retroshare_wire},
+        serde::{from_retroshare_wire_result, to_retroshare_wire, to_retroshare_wire_result},
         tlv::{tlv_set::TlvPeerIdSet, Tlv, Tlv2, TLV_HEADER_SIZE},
         write_u16, write_u32,
     };
@@ -250,7 +258,7 @@ mod test_tlv {
             expected.append(&mut $expected);
 
             let orig: Tlv<$tag, _> = Tlv($val);
-            let ser = to_retroshare_wire(&orig).unwrap();
+            let ser = to_retroshare_wire(&orig);
             println!("{ser:?}");
 
             assert_eq!(ser, expected);
@@ -268,7 +276,7 @@ mod test_tlv {
             expected.append(&mut $expected);
 
             let orig: Tlv<$tag, _> = Tlv($val);
-            let ser = to_retroshare_wire(&orig).unwrap();
+            let ser = to_retroshare_wire(&orig);
             println!("{ser:?}");
 
             assert_ne!(ser, expected);
@@ -332,11 +340,11 @@ mod test_tlv {
 
         let expected = hex::decode("13370000000c010203040506").unwrap();
 
-        let mut ser = to_retroshare_wire(&orig).unwrap();
+        let mut ser = to_retroshare_wire_result(&orig).unwrap();
 
         assert_eq!(ser, expected);
 
-        let de: TestType = from_retroshare_wire(&mut ser).unwrap();
+        let de: TestType = from_retroshare_wire_result(&mut ser).unwrap();
 
         assert_eq!(orig, de);
     }

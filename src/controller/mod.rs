@@ -10,7 +10,7 @@ use tokio::{
     time::interval,
 };
 
-use retroshare_compat::{events::EventType, services::service_info::RsServiceInfo};
+use retroshare_compat::services::service_info::RsServiceInfo;
 
 use crate::{
     model::{
@@ -63,13 +63,13 @@ impl CoreController {
     }
 
     pub async fn run(&mut self) -> ! {
-        let mut timer_services_2500ms = interval(Duration::from_millis(250));
+        let mut timer_services_250ms = interval(Duration::from_millis(250));
         let mut timer_slow_5s = interval(Duration::from_secs(5));
         let mut stats: StatsCollection = (Instant::now(), HashMap::new());
 
         loop {
             let queue = self.rx_core.recv();
-            let tick = timer_services_2500ms.tick();
+            let tick = timer_services_250ms.tick();
             let tick_slow = timer_slow_5s.tick();
 
             select! {
@@ -91,10 +91,10 @@ impl CoreController {
                     // reconnects
                     self.check_reconnects().await;
 
-                    // FIXME
-                    self.data_core.webui_send(
-                        EventType::PeerStateChanged { ssl_id: "d6fb6c0f53d18303dcc9043111490e40".into() }
-                    ).await;
+                    // // FIXME
+                    // self.data_core.webui_send(
+                    //     EventType::PeerStateChanged { ssl_id: "d6fb6c0f53d18303dcc9043111490e40".into() }
+                    // ).await;
                 }
                 msg = queue => {
                     trace!("queue");
@@ -110,7 +110,7 @@ impl CoreController {
 
     async fn tick(&mut self, stats: &mut StatsCollection) {
         // handle services
-        if let Some(items) = self.services.tick_all(stats) {
+        if let Some(items) = self.services.tick_all(stats).await {
             // this can be optimazed probably
             for item in items {
                 self.data_core.try_send_to_peer(item).await;
@@ -120,6 +120,8 @@ impl CoreController {
 
     async fn handle_message(&mut self, msg: &Intercom) {
         trace!("handle_message {msg:?}");
+
+        // own processing (message distribution follows later)
         match msg {
             Intercom::PeerUpdate(state) => {
                 match &state {
@@ -219,13 +221,6 @@ impl CoreController {
                         }
                     }
                 }
-
-                // handle event listener
-                for subscriber in self.data_core.event_listener.lock().await.iter() {
-                    subscriber
-                        .send(Intercom::PeerUpdate(state.clone()))
-                        .expect("failed to communicate with service");
-                }
             }
 
             Intercom::Thread(PeerThreadCommand::Incoming(con)) => {
@@ -233,11 +228,14 @@ impl CoreController {
 
                 unimplemented!();
             }
+
             Intercom::Send(packet) => {
                 self.data_core.try_send_to_peer(packet.to_owned()).await;
             }
+
             Intercom::Receive(packet) => {
                 assert!(packet.has_location(), "no location set!");
+                trace!("handling packet {packet:?}");
 
                 match self.services.handle_packet(packet.to_owned(), true).await {
                     // packet was locally handled and an answer was generated
@@ -259,9 +257,37 @@ impl CoreController {
                     }
                 }
             }
+
+            Intercom::Event(_) => (),
+
             cmd => {
                 warn!("[core] unhandled command: {cmd:?}");
             }
+        }
+
+        // TODO clean up
+        // forward message
+        match msg {
+            Intercom::PeerUpdate(state) => {
+                // handle event listener
+                for subscriber in self.data_core.get_subscribers().await.iter() {
+                    subscriber
+                        .send(Intercom::PeerUpdate(state.clone()))
+                        .expect("failed to communicate with service");
+                }
+            }
+            Intercom::Event(event) => {
+                // handle webui
+                self.data_core.webui_send(event.to_owned()).await;
+
+                // handle event listener
+                for subscriber in self.data_core.get_subscribers().await.iter() {
+                    subscriber
+                        .send(Intercom::Event(event.clone()))
+                        .expect("failed to communicate with service");
+                }
+            }
+            _ => (),
         }
     }
 
@@ -292,6 +318,7 @@ impl CoreController {
             // if candidate.get_location_id() == own {
             //     continue;
             // }
+            trace!("trying to connect to {}", candidate.get_name());
             let (builder, handler_tx) = ConnectionBuilder::new(&self, candidate.clone());
             let handler = tokio::spawn(builder.connect());
             self.pending_connection_attempts
@@ -337,6 +364,7 @@ impl ConnectionBuilder {
     }
 
     async fn connect(self) {
+        trace!("trying to connect to {}", self.peer_location.get_name());
         // turn IPs into ConnectionType::Tcp
         let ips = {
             let ips = self.peer_location.get_ips();
@@ -364,7 +392,14 @@ impl ConnectionBuilder {
             self.peer_location.get_name(),
         ) {
             for ip in ips {
+                trace!(
+                    "trying to connect to {} with ip {:?}",
+                    self.peer_location.get_name(),
+                    ip
+                );
+
                 if let Ok(tls_stream) = con.connect(ip).await {
+                    trace!("connected to {}!", self.peer_location.get_name(),);
                     ConnectedPeer::run(
                         self.inner_rx,
                         self.outer_tx.to_owned(),
