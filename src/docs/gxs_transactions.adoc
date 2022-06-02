@@ -1,0 +1,204 @@
+# GXS Transaction - How do they work?
+
+On a very high level, gxs / nxs (what is the difference?) transactions are a one-directional way to transport information from `NodeA` to `NodeB`. While `NodeB` does send something as part of the protocol, the information exchange is uni-directional.
+
+To have bi-directional data exchange, transactions can be a `request` or `responses` type.
+
+ When speaking of "(any) data" in this document, this only refers to gxs/nxs data! Of course RetroShare does not only transfer data by this gxs mechanism!
+
+## The Basics
+
+A transaction is identified by a transaction id or number, has a state and a type.
+
+- The transaction id is used for identifier packets that belong together.
+- The state is used for tracking what packet or data must be sent or is expected to be received.
+- The type specifies the content of the transaction (e.g. a request for groups)
+
+## The Protocol
+
+To transfer any data from `NodeA` to `NodeB`, `NodeA` starts a transaction by sending a packet with the `FLAG_BEGIN_P1` flag set (the flag is called `FlagBegin` in the rest of the document; `FLAG_BEGIN_P1` is the name used by RetroShare). `NodeB` then acknowledges the transaction by answering with a packet having the `FLAG_BEGIN_P2` set (called `FlagBeginAck` for obvious reasons in the rest of the document) and using the same transaction id .
+
+When `NodeA` has received the acknowledge package, it proceeds in sending all data-to-be-transferred in multiple sub packages and waits for `NodeB` to acknowledge the transfer. `NodeB` on the other side will listen for incoming packages with the corresponding transaction id and send an acknowledge when all are received. The acknowledge package has the `FLAG_END_SUCCESS` bit set (called `FlagEndSuccess`). 
+
+ The information on how many packets are send / should be expected, is part of the first (`FlagBegin`) message.
+
+After sending / receiving the packet with the `FlagEndSuccess` flag, the transaction is finished. `NodeB` can now process the data and act accordingly (e.g. answer to a request).
+
+There are other flags, like `FLAG_CANCEL` which aren't used by any code.
+
+## The Transaction States
+
+There are several state:
+
+[,rust]
+----
+pub enum NxsTransactionState {
+    Starting,  
+    Receiving, 
+    Sending,   
+    Completed,
+    Failed,
+    WaitingConfirm,
+}
+----
+
+On the side of `NodeA` the states take the following path: `WaitingConfirm` -> `Sending` -> `WaitingConfirm` -> `Completed` +
+On the side of `NodeB` the states take the following path: `Starting` -> `Receiving` -> `Completed`
+
+The flow looks like this:
+----
+
+                  NodeA                        NodeB
+        ───────────────────────────────────────────────────
+           ┌────────────────┐
+           │                │  FlagBegin
+           │ WaitingConfirm ├────────────────────┐
+           │                │                    │
+           └────────┬───────┘                    ▼
+                    │                    ┌───────────────┐
+                    │                    │               │
+                    │                    │   Starting    │
+                    │                    │               │
+                    │                    └───────┬───────┘
+                    │       FlagBeginAck         │
+                    │◄───────────────────────────┤
+                    │                            │
+                    ▼                            ▼
+           ┌────────────────┐            ┌───────────────┐
+           │                │            │               │
+           │    Sending     │            │   Receiving   │
+           │                │            │               │
+           └────────┬───────┘            └───────┬───────┘
+                    │           Data             │
+                    ├───────────────────────────►│
+                    │           Data             │
+                    ├───────────────────────────►│
+                    │            .               │
+                    │            .               │
+                    │            .               │
+                    │           Data             │
+                    ├───────────────────────────►│
+                    │                            │
+                    ▼                            │
+           ┌────────────────┐                    │
+           │                │                    │
+           │ WaitingConfirm │                    │
+           │                │                    │
+           └────────┬───────┘                    │
+                    │      FlagEndSuccess        │
+                    │◄───────────────────────────┤
+                    │                            │
+                    ▼                            ▼
+           ┌────────────────┐            ┌───────────────┐
+           │                │            │               │
+           │   Completed    │            │   Completed   │
+           │                │            │               │
+           └────────────────┘            └───────────────┘
+
+----
+
+When anything unexpected happens, or the transaction take too long (time out) the state changed to `Failed`.
+
+## Type of Transactions
+
+The system knows the following types:
+
+[,rust]
+----
+pub enum NxsTransactionItemType {
+    TypeGrpListResp = 0x01,
+    TypeMsgListResp = 0x02,
+    TypeGrpListReq = 0x04,
+    TypeMsgListReq = 0x08,
+    TypeGrps = 0x10,
+    TypeMsgs = 0x20,
+    TypeEncryptedData = 0x40,
+}
+----
+
+.What does what:
+
+ Disclaimer: This is mostly guessed based on code and hardy verified. Expect mistakes!
+
+- The type `TypeGrpListReq` comprises of `NxsSyncGrpItem` items, which carry a `group_id` and are answered with a `TypeGrps` typed transaction comprising of `NxsGrp` items, which carry data (+ meta data) of the corresponding `nxs_group`.
+- _TODO_
+
+
+## Timestamps and Synchronization
+
+I have no clue about this ...
+
+## What is stored in the databases?
+
+the meta field is a serialized version of some data _TODO_
+the meta data can signal, that the groups data is signed (which must be verified upon retrieval) (see `void RsGenExchange::processRecvdGroups()`)
+
+
+### Format of the BLOB columns
+
+There are several BLOB / binary database columns. They contain different types serialized in different formats.
+
+.Groups
+
+The GROUPS table has the following BLOB columns: `nxsData`, `keySet`, `meta` and `signSet`.
+
+- `keySet`: This data corresponds to the `TlvSecurityKeySet` type and thus comprises of a `group id` and multiple private and/or public keys. It can be (de)serialized using the "normal" RetroShare TLV format.
+- `signSet`: This data corresponds to the `TlvKeySignatureSet` type and therefore contains signatures. It can be (de)serialized using the "normal" RetroShare TLV format.
+- `meta`: This field belongs to the gxs/nxs system and contains serialized meta data of the (gxs) group. It resembles all/most (?) of the GROUPS table distributed values. The local values (e.g visible message count or received timestamp) are not exchanged (the are maintained purely locally). +
+Serializing this field is a bit tricky. While the code speaks from `TLV` it is not the usual TLV format. Instead this field has a 32 bit unsigned tag / id / api version followed by a 32 bit unsigned length (similar to the "common TLV" format). The other fields are (de)serialized using the "normal" RetroShare TLV format _but_ details may change based on the api version. For example, the `subscribeFlag` member is only part of the "_gxs group meta data version 2_" and plain `0` in version 1.
+
+ Example of a `RsGxsGrpMetaData`/`GxsGrpMetaSql` from the GxsId service
+----
+0211            tag  <- consumed by converting to `TlvBinaryData`
+00000468        len  <- consumed by converting to `TlvBinaryData`
+0000af01        nxs-api tag ( = version 2 )
+00000462        len
+25bf6d544490721c6f8e168043840518    group_id
+00000000000000000000000000000000    orig_grp_id
+00000000000000000000000000000000    parent_grp_id
+0000            tag (exptected 0)
+0000000a        len
+4875676f        group_name
+00000101        group_flags
+5e5ec543        publish_ts
+00000001        circle_type
+00000000        authen_flags
+00000000000000000000000000000000    author_id
+0000            tag (exptected 0)
+00000006        len ( -> empty, member is service_string ) 
+00000000000000000000000000000000    circle_id
+1051            tag TLV_TYPE_KEYSIGNATURESET
+00000142        len 
+1052...e217     sign_set
+1041            tag TLV_TYPE_SECURITYKEYSET
+000002a4        len
+00a0...0001     keys
+00000000        sign_flags (not present in api version 1)
+----
+
+- `nxsData`: This field contains (gxs) service specific types (de)serialized in "common packet fashion". There are `RsGxsGrpItem` and `RsGxsMsgItem` base classes that are utilized by, for example, `RsGxsForumGroupItem` and `RsGxsForumMsgItem` types.
+
+ Example of a `RsGxsIdGroupItem` from the GxsId service.
+----
+0211            tag  <- consumed by converting to `TlvBinaryData`
+0000003e        len  <- consumed by converting to `TlvBinaryData`
+02              service header
+0211            service type RsGxsIdItem
+02              sub type RsGxsIdGroupItem
+00000038        len
+0000000000000000000000000000000000000000    mPgpIdHash
+00b4            tag TLV_TYPE_STR_SIGN
+00000006        len
+1024            tag TLV_TYPE_RECOGNSET
+00000006        len
+1060            tag TLV_TYPE_IMAGE
+00000010        len
+00000000        image type (1 = png, 2 = jpg)
+0130            tag TLV_TYPE_BIN_IMAGE
+00000006        len
+----
+
+.Messages
+
+The MESSAGES table has the following BLOB columns: `nxsData`, `meta` and `signSet`. +
+The fields are the same as in the GROUPS table. (_TODO_ is that really the case?)
