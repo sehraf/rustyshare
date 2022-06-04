@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use bitflags::bitflags;
+use bitflags_serde_shim::impl_serde_for_bitflags;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -100,7 +102,18 @@ pub struct PeerNetItem {
     pub domain_port: u16,
 }
 
-pub type ServicePermissionFlags = u32; // FIXME
+bitflags! {
+    pub struct ServicePermissionFlags: u32 {
+        const NONE       = 0x00000000;  // 0x1, 0x2 and Ox4 are deprecated.
+        const DIRECT_DL  = 0x00000008;  // Accept to directly DL from this peer (breaks anonymity)
+        const ALLOW_PUSH = 0x00000010;  // Auto-DL files recommended by this peer
+        const REQUIRE_WL = 0x00000020;  // Require white list clearance for connection
+        const DEFAULT    = Self::DIRECT_DL.bits ;
+        const ALL        = Self::DIRECT_DL.bits | Self::ALLOW_PUSH.bits | Self::REQUIRE_WL.bits;
+    }
+}
+
+impl_serde_for_bitflags!(ServicePermissionFlags);
 
 //  // This item should be merged with the next item, but that is not backward compatible.
 //  class RsPeerServicePermissionItem : public RsItem
@@ -150,23 +163,18 @@ pub struct PeerBandwidthLimits {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PeerBandwidthLimitsItem(HashMap<PgpId, PeerBandwidthLimits>);
 
+bitflags! {
+    #[derive(Default)]
+    pub struct NodeGroupFlags: u32 {
+        const NONE     = 0x0000;
+        const STANDARD = 0x0001;
+    }
+}
+
+impl_serde_for_bitflags!(NodeGroupFlags);
+
 //  class RsNodeGroupItem: public RsItem
 //  {
-//  public:
-//      RsNodeGroupItem(): RsItem(RS_PKT_VERSION1, RS_PKT_CLASS_CONFIG, RS_PKT_TYPE_PEER_CONFIG, RS_PKT_SUBTYPE_NODE_GROUP), flag(0) {}
-//      virtual ~RsNodeGroupItem() {}
-
-//      virtual void clear() { pgpList.TlvClear();}
-
-//      explicit RsNodeGroupItem(const RsGroupInfo&) ;
-
-//      virtual void serial_process(RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx);
-
-//     // /* set data from RsGroupInfo to RsPeerGroupItem */
-//     // void set(RsGroupInfo &groupInfo);
-//     // /* get data from RsGroupInfo to RsPeerGroupItem */
-//     // void get(RsGroupInfo &groupInfo);
-
 //      /* Mandatory */
 //      RsNodeGroupId id;
 //      std::string name;
@@ -176,11 +184,11 @@ pub struct PeerBandwidthLimitsItem(HashMap<PgpId, PeerBandwidthLimits>);
 //  };
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub struct RsNodeGroupItem {
+pub struct NodeGroupItem {
     _dummy: u32,
     id: NodeGroupId,
     name: StringTagged<TLV_TYPE_STR_NAME>,
-    flag: u32,
+    flag: NodeGroupFlags,
 
     pgp_list: TlvPgpIdSet,
 }

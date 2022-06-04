@@ -1,3 +1,5 @@
+use bitflags::bitflags;
+use bitflags_serde_shim::impl_serde_for_bitflags;
 use ::serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
@@ -12,10 +14,29 @@ pub type ChatLobbyId = u64;
 pub type ChatLobbyMsgId = u64;
 pub type ChatLobbyNickName = StringTagged<TLV_TYPE_STR_NAME>;
 
-// // Flags for chat lobbies
-// //
-// typedef t_RsFlags32<FLAGS_TAG_SERVICE_CHAT > ChatLobbyFlags ;
-pub type ChatLobbyFlags = u32; // FIXME
+
+// pub type ChatLobbyFlags = u32; // FIXME
+
+bitflags! {
+    pub struct ChatLobbyFlags: u32 {
+        const PRIVATE                    = 0x0001;
+        const REQUESTS_AVATAR            = 0x0002;
+        const CONTAINS_AVATAR            = 0x0004;
+        const AVATAR_AVAILABLE           = 0x0008;
+        const CUSTOM_STATE               = 0x0010;  // used for transmitting peer status string
+        const PUBLIC                     = 0x0020;
+        const REQUEST_CUSTOM_STATE       = 0x0040;
+        const CUSTOM_STATE_AVAILABLE     = 0x0080;
+        const PARTIAL_MESSAGE            = 0x0100;
+        const LOBBY                      = 0x0200;
+        const CLOSING_DISTANT_CONNECTION = 0x0400;
+        const ACK_DISTANT_CONNECTION     = 0x0800;
+        const KEEP_ALIVE                 = 0x1000;
+        const CONNECTION_REFUSED         = 0x2000;
+    }
+}
+
+impl_serde_for_bitflags!(ChatLobbyFlags);
 
 // const ChatLobbyFlags RS_CHAT_LOBBY_FLAGS_AUTO_SUBSCRIBE( 0x00000001 ) ;
 // const ChatLobbyFlags RS_CHAT_LOBBY_FLAGS_deprecated    ( 0x00000002 ) ;
@@ -50,7 +71,7 @@ pub type ChatLobbyFlags = u32; // FIXME
 #[allow(unused)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMsgItem {
-    pub chat_flags: u32,
+    pub chat_flags: ChatLobbyFlags,
     pub send_time: u32,
     pub message: StringTagged<TLV_TYPE_STR_MSG>,
     #[serde(skip)]

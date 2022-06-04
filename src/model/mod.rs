@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc::UnboundedSender, Mutex, MutexGuard};
 
-use retroshare_compat::{basics::SslId, events::EventType, gxs::GxsDatabase};
+use retroshare_compat::{basics::SslId, events::EventType, gxs::GxsDatabaseBackend};
 
 use crate::{low_level_parsing::Packet, retroshare_compat::ssl_key::SslKey};
 
@@ -15,6 +15,7 @@ use self::{
     services::{chat::ChatStore, gxs_id::GxsIdStore},
 };
 
+pub mod gxs_timestamps;
 pub mod intercom;
 pub mod location;
 pub mod person;
@@ -39,7 +40,7 @@ pub struct DataCoreServiceStore {
 }
 
 impl DataCoreServiceStore {
-    pub fn new(database: GxsDatabase) -> Self {
+    pub fn new(database: GxsDatabaseBackend) -> Self {
         DataCoreServiceStore {
             chat: ChatStore::new(),
             gxs_id: GxsIdStore::new(database),
@@ -69,7 +70,7 @@ impl DataCore {
         keys: SslKey,
         friends: (Vec<Arc<Peer>>, Vec<Arc<Location>>),
         peer_id: Arc<SslId>,
-        gxs_id_db: GxsDatabase,
+        gxs_id_db: GxsDatabaseBackend,
     ) -> Arc<DataCore> {
         let me = friends
             .1
@@ -229,16 +230,7 @@ impl DataCore {
         *self.webui_clients.lock().await = ok_clients;
     }
 
-    // pub async fn get_service_data(&self) -> RwLockReadGuard<'_, DataCoreServiceStore> {
-    //     self.services.read().await
-    // }
-
     pub fn get_service_data(&self) -> &DataCoreServiceStore {
         &self.services
     }
-
-    // #[allow(unused)]
-    // pub async fn get_service_data_mut(&self) -> RwLockWriteGuard<'_, DataCoreServiceStore> {
-    //     self.services.write().await
-    // }
 }

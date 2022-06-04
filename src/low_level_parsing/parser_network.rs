@@ -1,12 +1,9 @@
 use std::sync::Arc;
 
 use log::{trace, warn};
-use retroshare_compat::basics::SslId;
+use retroshare_compat::{basics::SslId, services::ServiceType};
 
-use crate::{
-    low_level_parsing::{headers::Header, Packet},
-    services::ServiceType,
-};
+use crate::low_level_parsing::{headers::Header, Packet};
 
 use super::headers::HEADER_SIZE;
 

@@ -1,6 +1,6 @@
 [package]
 name = "retroshare_compat"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["sehraf <sehraf42@gmail.com>"]
 edition = "2021"
 
@@ -13,11 +13,16 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_repr = "0.1"
 hex = { version = "0.4", features = ["serde"] }
+bitflags = "1.3"
+bitflags_serde_shim = "0.2.2"
 log = "0.4"
 
 byteorder = { version = "1.4", optional = false }
 
 # sqlite
 rusqlite = { version = "0.27", features = [
-    "bundled-sqlcipher", "serde_json"
+    "bundled-sqlcipher",
+    "serde_json",
+    "vtab",
+    "array",
 ] } # TODO to bundled or not to bundled?

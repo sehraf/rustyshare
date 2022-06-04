@@ -73,7 +73,7 @@ pub struct VisibleChatLobbyRecord {
 // 	}
 // };
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatLobbyInfo {
     pub lobby_id: XInt64<u64>,                    // unique id of the lobby
     pub lobby_name: String,                       // name to use for this lobby

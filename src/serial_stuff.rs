@@ -2,7 +2,7 @@ use log::{info, warn};
 use retroshare_compat::{
     config::{
         ConfigKeyValueSet, PeerBandwidthLimitsItem, PeerNetItem, PeerServicePermissionItem,
-        RsNodeGroupItem,
+        NodeGroupItem,
     },
     keyring::Keyring,
     serde::from_retroshare_wire_result,
@@ -10,8 +10,8 @@ use retroshare_compat::{
 use std::sync::Arc;
 
 use crate::{
-    model::{location::Location, person::Peer},
     low_level_parsing::headers::{Header, HEADER_SIZE},
+    model::{location::Location, person::Peer},
 };
 
 pub fn parse_general_cfg(data: &mut Vec<u8>) -> () {
@@ -201,7 +201,7 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
                         }
                         // const uint8_t RS_PKT_SUBTYPE_NODE_GROUP            = 0x07;
                         0x07 => {
-                            let group: RsNodeGroupItem =
+                            let group: NodeGroupItem =
                                 from_retroshare_wire_result(data).expect("failed to deserialize");
                             info!("group info: {:?}", group);
                         }
@@ -240,6 +240,7 @@ pub fn load_peers(data: &mut Vec<u8>, keys: &Keyring) -> (Vec<Arc<Peer>>, Vec<Ar
 mod tests {
     use std::collections::HashMap;
 
+    use ::retroshare_compat::services::ServiceType;
     use byteorder::{ByteOrder, NetworkEndian};
 
     use crate::low_level_parsing::headers::Header;
@@ -261,8 +262,6 @@ mod tests {
     }
 
     fn gen_slice_probe() -> Vec<u8> {
-        use crate::services::ServiceType;
-
         // vec![0x02, 0xaa, 0xbb, 0xcc, 0x00, 0x00, 0x00, 0x08]
         let header = Header::Service {
             service: ServiceType::SliceProbe,
@@ -277,7 +276,7 @@ mod tests {
     fn gen_service_info_rtt() -> Vec<u8> {
         let mut data: Vec<u8> = vec![];
         let header = Header::Service {
-            service: crate::services::ServiceType::ServiceInfo,
+            service: ServiceType::ServiceInfo,
             sub_type: 0x01,
             size: 8 + 41 + 6,
         };

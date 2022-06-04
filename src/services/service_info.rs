@@ -12,7 +12,7 @@ use crate::{
     utils::{simple_stats::StatsCollection, Timers},
 };
 
-use super::ServiceType;
+use ::retroshare_compat::services::ServiceType;
 
 impl From<&dyn Service> for RsServiceInfo {
     fn from(service: &dyn Service) -> Self {
@@ -62,9 +62,10 @@ impl ServiceInfo {
     ) -> HandlePacketResult {
         match header.sub_type {
             SERVICE_INFO_SUB_TYPE => {
-                let services = from_retroshare_wire_result::<TlvServiceInfoMapRef>(&mut packet.payload)
-                    .expect("failed to deserialize")
-                    .0;
+                let services =
+                    from_retroshare_wire_result::<TlvServiceInfoMapRef>(&mut packet.payload)
+                        .expect("failed to deserialize")
+                        .0;
 
                 for s in services {
                     info!("[service_info] num: {:#08X} -> {:?}", s.0 .0, s.1 .0);
@@ -88,7 +89,11 @@ impl Service for ServiceInfo {
         self.handle_incoming(&packet.header.into(), packet)
     }
 
-    async fn tick(&mut self, _stats: &mut StatsCollection, _timers: &mut Timers) -> Option<Vec<Packet>> {
+    async fn tick(
+        &mut self,
+        _stats: &mut StatsCollection,
+        _timers: &mut Timers,
+    ) -> Option<Vec<Packet>> {
         None
     }
 

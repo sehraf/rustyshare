@@ -85,7 +85,7 @@ pub async fn rs_msgs_get_list_of_nearby_chat_lobbies(
 //  * @return true on success
 //  */
 //  virtual bool getChatLobbyInfo(const ChatLobbyId &id, ChatLobbyInfo &info) = 0 ;
-gen_webui_return_type!(GetChatLobbyInfo, info, ChatLobbyInfo);
+gen_webui_return_type!(GetChatLobbyInfo, info, Option<ChatLobbyInfo>);
 #[post("/getChatLobbyInfo")]
 pub async fn rs_msgs_get_chat_lobby_info(
     state: web::Data<Arc<DataCore>>,
@@ -101,11 +101,11 @@ pub async fn rs_msgs_get_chat_lobby_info(
     {
         Some(info) => Ok(web::Json(GetChatLobbyInfo {
             retval: true,
-            info: info.into(),
+            info: Some(info.into()),
         })),
         None => Ok(web::Json(GetChatLobbyInfo {
             retval: false,
-            info: ChatLobbyInfo::default(),
+            info: None,
         })),
     }
 }

@@ -1,11 +1,14 @@
 use std::{collections::HashSet, fmt, ops::Deref};
 
-use rusqlite::types::FromSql;
+use bitflags::bitflags;
+use bitflags_serde_shim::impl_serde_for_bitflags;
+use log::warn;
+use rusqlite::{types::FromSql, ToSql};
 use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::{
-    basics::GxsId,
+    basics::{GxsGroupId, GxsId},
     read_u16, read_u32,
     serde::{from_retroshare_wire_result, to_retroshare_wire_result},
     tlv::tags::*,
@@ -45,6 +48,18 @@ impl From<GxsId> for KeyId {
     }
 }
 
+impl From<KeyId> for GxsGroupId {
+    fn from(id: KeyId) -> Self {
+        id.to_string().into()
+    }
+}
+
+impl From<GxsGroupId> for KeyId {
+    fn from(id: GxsGroupId) -> Self {
+        Self(id.to_string().into())
+    }
+}
+
 impl PartialEq<GxsId> for KeyId {
     fn eq(&self, other: &GxsId) -> bool {
         self.to_string() == other.to_string()
@@ -75,15 +90,15 @@ pub type TlvKeySignature = Tlv<TLV_TYPE_KEYSIGNATURE, TlvKeySignatureInner>;
 // static const uint32_t INDEX_AUTHEN_ADMIN        = 0x00000040; // admin key
 #[repr(u32)]
 #[derive(Debug, Serialize_repr, Deserialize_repr, PartialEq, Eq, Hash, Clone)]
-pub enum SignType {
+pub enum KeySignType {
     IndexAuthenIdentity = 0x00000010,
     IndexAuthenPublish = 0x00000020,
     IndexAuthenAdmin = 0x00000040,
 }
 
-impl Default for SignType {
+impl Default for KeySignType {
     fn default() -> Self {
-        SignType::IndexAuthenIdentity // ?!
+        KeySignType::IndexAuthenIdentity // ?!
     }
 }
 
@@ -92,10 +107,11 @@ impl Default for SignType {
 //     std::map<SignType, RsTlvKeySignature> keySignSet; // mandatory
 // };
 pub type TlvKeySignatureSet =
-    TlvMap<TLV_TYPE_KEYSIGNATURESET, Tlv<TLV_TYPE_KEYSIGNATURETYPE, SignType>, TlvKeySignature>;
+    TlvMap<TLV_TYPE_KEYSIGNATURESET, Tlv<TLV_TYPE_KEYSIGNATURETYPE, KeySignType>, TlvKeySignature>;
 
 impl FromSql for TlvKeySignatureSet {
     fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        warn!("{value:?}");
         match value.as_bytes_or_null()? {
             Some(bytes) => Ok(from_retroshare_wire_result(&mut bytes.into())
                 .map_err(|err| rusqlite::types::FromSqlError::Other(Box::new(err)))?),
@@ -104,17 +120,28 @@ impl FromSql for TlvKeySignatureSet {
     }
 }
 
-// TODO work out how to deal with bitsets in rust, maybe https://docs.rs/bitflags/latest/bitflags/ ?
-#[repr(u32)]
-pub enum TlvKeyFlags {
-    // TypeMask = 0x000f,
-    TypePublicOnly = 0x0001,
-    TypeFull = 0x0002,
-    DistribPublish = 0x0020,
-    DistribAdmin = 0x0040,
-    DistribIdentity = 0x0080,
-    // DistribMask = 0x00f0,
+impl ToSql for TlvKeySignatureSet {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(to_retroshare_wire_result(self)
+            .map_err(|err| rusqlite::Error::ToSqlConversionFailure(err.into()))?
+            .into())
+    }
 }
+
+bitflags! {
+    // #[derive(Default)]
+    pub struct TlvKeyFlags: u32 {
+        const TYPE_PUBLIC_ONLY    = 0x0001;
+        const TYPE_FULL           = 0x0002;
+        #[deprecated]
+        const DISTRIBUTE_PUBLIC   = 0x0010; // was used as PUBLISH flag. Probably a typo.
+        const DISTRIBUTE_PUBLISH  = 0x0020;
+        const DISTRIBUTE_ADMIN    = 0x0040;
+        const DISTRIBUTE_IDENTITY = 0x0080;
+    }
+}
+
+impl_serde_for_bitflags!(TlvKeyFlags);
 
 // class RsTlvRSAKey: public RsTlvItem
 // {
@@ -127,10 +154,10 @@ pub enum TlvKeyFlags {
 //     RsTlvBinaryData keyData; 	// Mandatory :
 // };
 
-#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Hash, Clone)]
 pub struct TlvRSAKeyInner {
     pub key_id: KeyId,                                  // Mandatory :
-    pub key_flags: u32,                                 // Mandatory ;
+    pub key_flags: TlvKeyFlags,                         // Mandatory ;
     pub start_ts: u32,                                  // Mandatory :
     pub end_ts: u32,                                    // Mandatory :
     pub key_data: TlvBinaryData<TLV_TYPE_KEY_EVP_PKEY>, // Mandatory :
@@ -168,7 +195,7 @@ pub type TlvPublicRSAKey = TlvRSAKey;
 // 	std::map<RsGxsId, RsTlvPrivateRSAKey> private_keys;	// Mandatory :
 // };
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TlvSecurityKeySet {
     pub group_id: StringTagged<TLV_TYPE_STR_GROUPID>,
     pub public_keys: HashSet<TlvPublicRSAKey>,
@@ -239,15 +266,15 @@ impl<'de> Deserialize<'de> for TlvSecurityKeySet {
                 while !bytes.is_empty() {
                     let key: TlvRSAKey =
                         from_retroshare_wire_result(&mut bytes).expect("failed to deserialize");
-                    match key.key_flags & RSTLV_KEY_TYPE_MASK {
-                        RSTLV_KEY_TYPE_PUBLIC_ONLY => {
+                    match key.key_flags {
+                        flags if flags.contains(TlvKeyFlags::TYPE_PUBLIC_ONLY) => {
                             public_keys.insert(key);
                         }
-                        RSTLV_KEY_TYPE_FULL => {
+                        flags if flags.contains(TlvKeyFlags::TYPE_FULL) => {
                             private_keys.insert(key);
                         }
                         flags @ _ => {
-                            log::error!("unkown flags {flags} for TlvRSAKey");
+                            log::error!("unknown flags {flags:?} for TlvRSAKey");
                             return Err(::serde::de::Error::custom(crate::serde::Error::WrongTag));
                         }
                     }
@@ -271,5 +298,13 @@ impl FromSql for TlvSecurityKeySet {
         let obj = from_retroshare_wire_result(&mut bytes)
             .map_err(|err| rusqlite::types::FromSqlError::Other(Box::new(err)))?;
         Ok(obj)
+    }
+}
+
+impl ToSql for TlvSecurityKeySet {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(to_retroshare_wire_result(self)
+            .map_err(|err| rusqlite::Error::ToSqlConversionFailure(err.into()))?
+            .into())
     }
 }

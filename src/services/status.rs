@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use log::{debug, info};
 use retroshare_compat::{
-    serde::{from_retroshare_wire_result, to_retroshare_wire_result},
-    services::status::{StatusItem, StatusValue},
+    serde::from_retroshare_wire,
+    services::{status::{StatusItem, StatusValue}, ServiceType},
 };
 use std::time::SystemTime;
 
@@ -13,11 +13,12 @@ use crate::{
     utils::{simple_stats::StatsCollection, Timers},
 };
 
-use super::ServiceType;
+use super::build_packet_without_location;
 
+#[allow(unused)]
 const STATUS_SUB_SERVICE: u8 = 0x01;
 
-/// Implements a status stub that sends "online" to the other peer and consums any incoming packets
+/// Implements a status stub that sends "online" to the other peer and consume any incoming packets
 pub struct Status {
     sent: bool,
 }
@@ -32,14 +33,7 @@ impl Status {
         _header: &ServiceHeader,
         mut packet: Packet,
     ) -> HandlePacketResult {
-        // assert_eq!(header.service, ServiceType::Status as u16);
-        // assert_eq!(header.sub_type, STATUS_SUB_SERVICE);
-        // assert_eq!(packet.payload.len(), 8);
-
-        // let _ts = Duration::seconds(read_u32(&mut packet.payload) as i64);
-        // let status = StatusValue::from(read_u32(&mut packet.payload));
-        let item: StatusItem =
-            from_retroshare_wire_result(&mut packet.payload).expect("failed to deserialize");
+        let item: StatusItem = from_retroshare_wire(&mut packet.payload);
         info!("[status] received status {}", item.status);
 
         handle_packet!()
@@ -58,37 +52,26 @@ impl Service for Status {
         self.handle_incoming(&packet.header.into(), packet)
     }
 
-    async fn tick(&mut self, _stats: &mut StatsCollection, _timers: &mut Timers) -> Option<Vec<Packet>> {
+    async fn tick(
+        &mut self,
+        _stats: &mut StatsCollection,
+        _timers: &mut Timers,
+    ) -> Option<Vec<Packet>> {
         if !self.sent {
             self.sent = true;
 
-            // // built packet
-            // let mut payload = vec![];
-            // let header = STATUS_PACKET;
-            // let mut offset: usize = 0;
-
-            // // sendTime
-            // let now = SystemTime::now()
-            //     .duration_since(std::time::UNIX_EPOCH)
-            //     .expect("Time went backwards");
-            // serial_stuff::write_u32(&mut payload, &mut offset, now.as_secs() as u32);
-
-            // // status
-            // serial_stuff::write_u32(&mut payload, &mut offset, StatusValue::Online.into());
-
-            // assert_eq!(offset, payload.len());
-            // assert_eq!(offset, header.get_payload_size());
-            let payload = to_retroshare_wire_result(&StatusItem {
+            let item = StatusItem {
                 send_time: SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .expect("Time went backwards")
                     .as_secs() as u32,
                 status: StatusValue::Online.into(),
-            })
-            .expect("failed to serialize");
-            let header =
-                ServiceHeader::new(ServiceType::Status, STATUS_SUB_SERVICE, &payload);
-            let p = Packet::new_without_location(header.into(), payload);
+            };
+
+            // This is a test for a more streamlines "sending packets" system
+            // See services/mod.rs
+            let p = build_packet_without_location(&item);
+
             return Some(vec![p]);
         }
         None

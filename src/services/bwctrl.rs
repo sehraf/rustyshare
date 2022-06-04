@@ -10,16 +10,16 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use crate::{
     handle_packet,
+    low_level_parsing::{headers::ServiceHeader, Packet},
     model::{
         intercom::{Intercom, PeerState, PeerUpdate},
         DataCore,
     },
-    low_level_parsing::{headers::ServiceHeader, Packet},
     services::{HandlePacketResult, Service},
     utils::{self, simple_stats::StatsCollection, Timers},
 };
 
-use super::ServiceType;
+use ::retroshare_compat::services::ServiceType;
 
 const BWCTRL_SUB_TYPE: u8 = 0x01; // RS_PKT_SUBTYPE_BWCTRL_ALLOWED_ITEM ?!
 
@@ -67,7 +67,11 @@ impl Service for BwCtrl {
         self.handle_incoming(&packet.header.into(), packet)
     }
 
-    async fn tick(&mut self, _stats: &mut StatsCollection, _timers: &mut Timers) -> Option<Vec<Packet>> {
+    async fn tick(
+        &mut self,
+        _stats: &mut StatsCollection,
+        _timers: &mut Timers,
+    ) -> Option<Vec<Packet>> {
         let mut out: Vec<Packet> = vec![];
 
         while let Ok(cmd) = self.events.try_recv() {
@@ -77,8 +81,7 @@ impl Service for BwCtrl {
                     let payload = to_retroshare_wire(&item);
 
                     let packet = Packet::new(
-                        ServiceHeader::new(ServiceType::BwCtrl.into(), BWCTRL_SUB_TYPE, &payload)
-                            .into(),
+                        ServiceHeader::new(self.get_id(), BWCTRL_SUB_TYPE, &payload).into(),
                         payload,
                         loc.clone(),
                     );

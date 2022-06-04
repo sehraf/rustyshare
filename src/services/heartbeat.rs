@@ -13,7 +13,7 @@ use crate::{
     utils::{simple_stats::StatsCollection, Timer, Timers},
 };
 
-use super::ServiceType;
+use ::retroshare_compat::services::ServiceType;
 
 const HEARTBEAT_SUB_SERVICE: u8 = 0x01;
 

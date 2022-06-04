@@ -5,7 +5,7 @@ use openssl::{
     rsa::Rsa,
     sign::{Signer, Verifier},
 };
-use retroshare_compat::tlv::tlv_keys::TlvPublicRSAKey;
+use retroshare_compat::tlv::tlv_keys::{TlvKeyFlags, TlvPublicRSAKey};
 
 pub fn verify_signature(
     key: &TlvPublicRSAKey,
@@ -16,7 +16,8 @@ pub fn verify_signature(
     trace!("verify key flags {:0x}", key.key_flags);
     trace!("verify data {}", hex::encode(data_signed));
 
-    assert!((key.key_flags & 0x02) == 0);
+    // assert!((key.key_flags & 0x02) == 0);
+    assert!(!key.key_flags.contains(TlvKeyFlags::TYPE_FULL));
 
     // get key
     let rsa = Rsa::public_key_from_der_pkcs1(key.key_data.as_slice())?;
@@ -36,7 +37,8 @@ pub fn generate_signature(
     trace!("sign key flags {:0x}", key.key_flags);
     trace!("sign data {}", hex::encode(data_to_sign));
 
-    assert!((key.key_flags & 0x02) != 0);
+    // assert!((key.key_flags & 0x02) != 0);
+    assert!(key.key_flags.contains(TlvKeyFlags::TYPE_FULL));
 
     // get key
     let rsa = Rsa::private_key_from_der(key.key_data.as_slice())?;

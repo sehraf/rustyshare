@@ -166,9 +166,7 @@ mod test {
     fn test_tlv_with_length_cut() {
         type TestType = Tlv2<0x1337, Vec<u8>>;
 
-        let orig = TestType {
-            0: vec![1, 2, 3, 4, 5, 6],
-        };
+        let orig: TestType = vec![1, 2, 3, 4, 5, 6].into();
 
         let expected = hex::decode("13370000000c010203040506").unwrap();
 

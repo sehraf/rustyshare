@@ -1,5 +1,5 @@
 use controller::CoreController;
-use flexi_logger::{LevelFilter, LogSpecification};
+use flexi_logger::{Duplicate, FileSpec, LevelFilter, LogSpecification, WriteMode};
 use log::warn;
 use std::{
     convert::TryInto,
@@ -122,7 +122,10 @@ fn select_location(base_dir: &Path, keys: &Keyring) -> Option<(String, X509, ope
 
             // parse number
             let num_selected = buffer.parse::<usize>().ok()?;
-            assert!(num > num_selected);
+            if num < num_selected {
+                warn!("failed, selected number is too big");
+                return None;
+            }
 
             // get key
             let loc = &locations[num_selected - 1];
@@ -137,25 +140,31 @@ fn select_location(base_dir: &Path, keys: &Keyring) -> Option<(String, X509, ope
 async fn main() {
     let mut builder = LogSpecification::builder();
     builder
+        .module(
+            "retroshare_compat::gxs::sqlite::database",
+            LevelFilter::Trace,
+        )
         // .module("rustyshare::controller::connected_peer", LevelFilter::Debug)
         // .module("rustyshare::controller", LevelFilter::Trace)
         // .module("rustyshare::gxs", LevelFilter::Trace)
-        // .module("rustyshare::gxs::gxsid", LevelFilter::Trace)
+        // .module("rustyshare::gxs::gxsid", LevelFilter::Debug)
+        .module("rustyshare::gxs::nxs_transactions", LevelFilter::Debug)
         // .module("rustyshare::services", LevelFilter::Trace)
         .module("rustyshare::services::heartbeat", LevelFilter::Warn)
         .module("rustyshare::services::bwctrl", LevelFilter::Warn)
         // .module("rustyshare::services::chat", LevelFilter::Debug)
-        .module("rustyshare::services::gxs_id", LevelFilter::Trace)
+        .module("rustyshare::services::gxs_id", LevelFilter::Debug)
         // .module("rustyshare::services::turtle", LevelFilter::Trace)
         // .module("sequoia_openpgp", LevelFilter::Trace)
         // .module("actix", LevelFilter::Trace)
         .module("actix_web", LevelFilter::Trace)
         .default(LevelFilter::Info);
     flexi_logger::Logger::with(builder.finalize())
-        // .log_to_file(FileSpec::default())
-        // .print_message()
-        // .write_mode(WriteMode::BufferAndFlush)
-        // .duplicate_to_stderr(Duplicate::All)
+        // .format(colored_detailed_format)
+        .log_to_file(FileSpec::default().suppress_timestamp())
+        .print_message()
+        .write_mode(WriteMode::BufferAndFlush)
+        .duplicate_to_stderr(Duplicate::All)
         // .log_to_stderr()
         .start()
         .expect("failed to start logger");
@@ -169,13 +178,13 @@ async fn main() {
     let mut keys = Keyring::new();
     keys.parse(&rs_base_dir);
 
-    let (loc, localtion_path, ssl_key, (gxs_id_db, _gxs_forum_db)) = loop {
+    let (loc, location_path, ssl_key, (gxs_id_db, _gxs_forum_db)) = loop {
         // pick location
         let loc = match select_location(&rs_base_dir, &keys) {
             Some(a) => a,
             None => continue,
         };
-        let localtion_path = rs_base_dir.join(&loc.0);
+        let location_path = rs_base_dir.join(&loc.0);
 
         println!("");
         let mut password = rpassword::prompt_password_stdout("Password: ").unwrap();
@@ -183,12 +192,12 @@ async fn main() {
         // unlock key ...
         match retroshare_compat::ssl_key::SslKey::new().load_encrypted(
             &loc.2,
-            &localtion_path,
+            &location_path,
             &password,
         ) {
             Ok((key, gxs)) => {
                 password.clear();
-                break (loc, localtion_path, key, gxs);
+                break (loc, location_path, key, gxs);
             }
             Err(why) => {
                 warn!("{}", why);
@@ -201,16 +210,16 @@ async fn main() {
     };
 
     // ... load general config ...
-    let mut general_cfg = retroshare_compat::config_store::decryp_file(
-        &localtion_path.join("config/general.cfg"),
+    let mut general_cfg = retroshare_compat::config_store::decrypt_file(
+        &location_path.join("config/general.cfg"),
         ssl_key.to_owned(),
     )
     .expect("failed to load peers.cfg");
     serial_stuff::parse_general_cfg(&mut general_cfg);
 
     // ... and load location ...
-    let mut peers_cfg = retroshare_compat::config_store::decryp_file(
-        &localtion_path.join("config/peers.cfg"),
+    let mut peers_cfg = retroshare_compat::config_store::decrypt_file(
+        &location_path.join("config/peers.cfg"),
         ssl_key.to_owned(),
     )
     .expect("failed to load peers.cfg");

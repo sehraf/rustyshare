@@ -18,17 +18,17 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use crate::{
     handle_packet,
+    low_level_parsing::{headers::ServiceHeader, Packet},
     model::{
         intercom::{Intercom, PeerState, PeerUpdate},
         person::Peer,
         DataCore,
     },
-    low_level_parsing::{headers::ServiceHeader, Packet},
     services::{HandlePacketResult, Service},
     utils::{simple_stats::StatsCollection, Timers},
 };
 
-use super::ServiceType;
+use ::retroshare_compat::services::ServiceType;
 
 const DISCOVERY_SUB_TYPE_PGP_LIST: u8 = 0x01;
 const DISCOVERY_SUB_TYPE_PGP_CERT: u8 = 0x02;
@@ -164,12 +164,8 @@ impl Discovery {
                 }
 
                 let payload = to_retroshare_wire(&item);
-                let header = ServiceHeader::new(
-                    ServiceType::Discovery,
-                    DISCOVERY_SUB_TYPE_PGP_LIST,
-                    &payload,
-                )
-                .into();
+                let header =
+                    ServiceHeader::new(self.get_id(), DISCOVERY_SUB_TYPE_PGP_LIST, &payload).into();
                 return handle_packet!(Packet::new(header, payload, from));
             }
         } else {
@@ -206,7 +202,11 @@ impl Service for Discovery {
         self.handle_incoming(&packet.header.into(), packet).await
     }
 
-    async fn tick(&mut self, _stats: &mut StatsCollection, _timers: &mut Timers) -> Option<Vec<Packet>> {
+    async fn tick(
+        &mut self,
+        _stats: &mut StatsCollection,
+        _timers: &mut Timers,
+    ) -> Option<Vec<Packet>> {
         let mut out: Vec<Packet> = vec![];
 
         while let Ok(cmd) = self.events_rx.try_recv() {
@@ -217,12 +217,8 @@ impl Service for Discovery {
                     // write_rs_disc_contact_item(&mut payload, &self.info);
                     let payload = to_retroshare_wire(&self.info);
                     let packet = Packet::new(
-                        ServiceHeader::new(
-                            ServiceType::Discovery,
-                            DISCOVERY_SUB_TYPE_CONTACT,
-                            &payload,
-                        )
-                        .into(),
+                        ServiceHeader::new(self.get_id(), DISCOVERY_SUB_TYPE_CONTACT, &payload)
+                            .into(),
                         payload,
                         loc.clone(),
                     );

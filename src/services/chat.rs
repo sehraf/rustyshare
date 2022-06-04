@@ -1,6 +1,9 @@
-use std::{collections::hash_map::Entry, time::SystemTime};
 #[allow(deprecated)]
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::hash_map::Entry,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use async_trait::async_trait;
 use log::{debug, info, trace, warn};
@@ -11,10 +14,10 @@ use retroshare_compat::{
     serde::{from_retroshare_wire, to_retroshare_wire, Toggleable},
     services::chat::{
         ChatIdType, ChatLobbyBouncingObject, ChatLobbyConnectChallengeItem, ChatLobbyEvent,
-        ChatLobbyEventItem, ChatLobbyId, ChatLobbyInviteItem, ChatLobbyListItem, ChatLobbyMsgItem,
-        ChatMsgItem,
+        ChatLobbyEventItem, ChatLobbyFlags, ChatLobbyId, ChatLobbyInviteItem, ChatLobbyListItem,
+        ChatLobbyMsgItem, ChatMsgItem,
     },
-    tlv::tlv_keys::{KeyId, TlvKeySignature, TlvKeySignatureInner},
+    tlv::tlv_keys::{KeyId, TlvKeyFlags, TlvKeySignature, TlvKeySignatureInner},
 };
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
@@ -34,7 +37,8 @@ use crate::{
     utils::{simple_stats::StatsCollection, Timer, Timers},
 };
 
-use super::ServiceType;
+use ::retroshare_compat::services::ServiceType;
+
 const CHAT_SUB_TYPE_CHAT_DEFAULT: u8 = 0x01;
 const CHAT_SUB_TYPE_CHAT_AVATAR: u8 = 0x03;
 const CHAT_SUB_TYPE_CHAT_STATUS: u8 = 0x04;
@@ -81,7 +85,7 @@ const LOBBY_REQUEST_INTERVAL: (&str, Duration, Duration) = (
     Duration::from_secs(120),
     Duration::from_secs(5),
 );
-const LOBBY_MAINTAINANCE_INTERVAL: (&str, Duration) =
+const LOBBY_MAINTENANCE_INTERVAL: (&str, Duration) =
     ("maintaining lobbies", Duration::from_secs(30));
 const LOBBY_KEEP_ALIVE_INTERVAL: (&str, Duration) = ("keep alive", Duration::from_secs(120));
 
@@ -99,7 +103,10 @@ macro_rules! verify_item {
         let header: Header = ServiceHeader::new(header.service, header.sub_type, &payload).into();
         let data_signed = Packet::new_without_location(header, payload).to_bytes();
 
-        if !$self.verify_message(&key_id, &data_signed, &$item.bounce_obj.signature.sign_data) {
+        if !$self
+            .verify_message(&key_id, &data_signed, &$item.bounce_obj.signature.sign_data)
+            .await
+        {
             debug!("[Chat] {} verification failed!", stringify!($item));
             debug!(" -> {:?}", $item);
             return handle_packet!();
@@ -120,10 +127,10 @@ macro_rules! sign_item {
         let header: Header = ServiceHeader::new(header.service, header.sub_type, &payload).into();
         let data_to_sign = Packet::new_without_location(header, payload).to_bytes();
 
-        match $self.sign_message(&key_id, &data_to_sign) {
-            Some(signatur) => {
+        match $self.sign_message(&key_id, &data_to_sign).await {
+            Some(signature) => {
                 trace!("signed {} successful", stringify!($item));
-                $item.bounce_obj.signature.sign_data = signatur.into();
+                $item.bounce_obj.signature.sign_data = signature.into();
                 true
             }
             None => {
@@ -141,7 +148,7 @@ macro_rules! sign_item {
 // std::string lobby_topic ;					// topic to use for this lobby
 // std::set<RsPeerId> participating_friends ;	// list of direct friend who participate.
 
-// uint32_t total_number_of_peers ;			// total number of particpating peers. Might not be
+// uint32_t total_number_of_peers ;			// total number of participating peers. Might not be
 // rstime_t last_report_time ; 					// last time the lobby was reported.
 // ChatLobbyFlags lobby_flags ;				// see RS_CHAT_LOBBY_PRIVACY_LEVEL_PUBLIC / RS_CHAT_LOBBY_PRIVACY_LEVEL_PRIVATE
 
@@ -153,7 +160,7 @@ pub struct Chat {
 
     auto_join: Vec<ChatLobbyId>,
 
-    // TODO
+    // TODO this id is used for auto joining
     own_gxs_id: Arc<GxsId>,
 }
 
@@ -175,8 +182,8 @@ impl Chat {
             Timer::new_soon(LOBBY_REQUEST_INTERVAL.1, LOBBY_REQUEST_INTERVAL.2),
         );
         timers.insert(
-            LOBBY_MAINTAINANCE_INTERVAL.0.into(),
-            Timer::new(LOBBY_MAINTAINANCE_INTERVAL.1),
+            LOBBY_MAINTENANCE_INTERVAL.0.into(),
+            Timer::new(LOBBY_MAINTENANCE_INTERVAL.1),
         );
         timers.insert(
             LOBBY_KEEP_ALIVE_INTERVAL.0.into(),
@@ -186,7 +193,7 @@ impl Chat {
         let (tx, rx) = unbounded_channel();
         *data.cmd.write().await = Some(tx);
 
-        // TODO
+        // TODO FIXME
         // let own_gxs_id = dc.get_identities_summaries().await.iter().find(|&entry| entry.)
         let own_gxs_id = Arc::new("c59df722f56f2f886ac301acc5572e03".into());
 
@@ -196,7 +203,7 @@ impl Chat {
 
             cmd_rx: rx,
 
-            // TODO
+            // TODO FIXME
             // { id: 4347301314802127616, name: StringTagged("test") }
             // { id: 7555643923972858789, name: StringTagged("Retroshare Devel (signed)") }
             // { id: 8705058284245932812, name: StringTagged("][German][Deutsch][") }
@@ -253,11 +260,18 @@ impl Chat {
                 trace!("[Chat] ChatMsgItem");
 
                 let msg: ChatMsgItem = from_retroshare_wire(&mut packet.payload);
-                warn!("CHAT_SUB_TYPE_CHAT_DEFAULT {msg:?}");
+                trace!("CHAT_SUB_TYPE_CHAT_DEFAULT {msg:?}");
 
+                if msg.chat_flags.contains(ChatLobbyFlags::PRIVATE) {
+                    info!(
+                        "received (direct) chat message from {}: {}",
+                        packet.peer_id(),
+                        msg.message
+                    );
+                }
                 // self.core_tx
-                // .send(Intercom::Event(EventType::ChatMessage { msg: msg.into() }))
-                // .expect("failed to send to core");
+                //     .send(Intercom::Event(EventType::ChatMessage { msg: msg.into() }))
+                //     .expect("failed to send to core");
             }
             CHAT_SUB_TYPE_CHAT_LOBBY_CHALLENGE => {
                 trace!("[Chat] lobby challenge");
@@ -308,7 +322,7 @@ impl Chat {
 
                 let payload = to_retroshare_wire(&list);
                 let header =
-                    ServiceHeader::new(ServiceType::Chat, CHAT_SUB_TYPE_CHAT_LOBBY_LIST, &payload)
+                    ServiceHeader::new(self.get_id(), CHAT_SUB_TYPE_CHAT_LOBBY_LIST, &payload)
                         .into();
                 return handle_packet!(Packet::new(header, payload, packet.peer_id.to_owned()));
             }
@@ -358,7 +372,7 @@ impl Chat {
             }
 
             sub_type => {
-                warn!("[Chat] recevied unknown sub typ {sub_type}");
+                warn!("[Chat] received unknown sub typ {sub_type}");
             }
         }
 
@@ -418,7 +432,7 @@ impl Chat {
                         .insert(Arc::new(key_id.to_owned().into()), SystemTime::now());
                     if check.is_some() {
                         warn!(
-                            "added peer {} to lobby {} but they are already part of it?!",
+                            "added peer {} to lobby {} but they are already part of it",
                             key_id.to_string(),
                             lobby.lobby_name
                         )
@@ -483,7 +497,7 @@ impl Chat {
     fn request_lobbies(&self) -> Vec<Packet> {
         let payload = vec![];
         let header = ServiceHeader::new(
-            ServiceType::Chat,
+            self.get_id(),
             CHAT_SUB_TYPE_CHAT_LOBBY_LIST_REQUEST,
             &payload,
         )
@@ -540,7 +554,7 @@ impl Chat {
         };
 
         let header = ServiceHeader::new(
-            ServiceType::Chat,
+            self.get_id(),
             CHAT_SUB_TYPE_CHAT_LOBBY_SIGNED_EVENT,
             &vec![],
         );
@@ -550,7 +564,7 @@ impl Chat {
 
         let payload = to_retroshare_wire(&event);
         let header = ServiceHeader::new(
-            ServiceType::Chat,
+            self.get_id(),
             CHAT_SUB_TYPE_CHAT_LOBBY_SIGNED_EVENT,
             &payload,
         );
@@ -597,8 +611,7 @@ impl Chat {
     fn build_lobby_invite(&self, lobby: &Lobby) -> Packet {
         let invite: ChatLobbyInviteItem = lobby.into();
         let payload = to_retroshare_wire(&invite);
-        let header =
-            ServiceHeader::new(ServiceType::Chat, CHAT_SUB_TYPE_CHAT_LOBBY_INVITE, &payload);
+        let header = ServiceHeader::new(self.get_id(), CHAT_SUB_TYPE_CHAT_LOBBY_INVITE, &payload);
         Packet::new_without_location(header.into(), payload)
     }
 
@@ -642,7 +655,7 @@ impl Chat {
 
         let bounce_obj = self.build_bouncing_obj(lobby, &key_id).await;
         let msg_obj = ChatMsgItem {
-            chat_flags: 0x201, // TODO
+            chat_flags: ChatLobbyFlags::LOBBY | ChatLobbyFlags::PRIVATE,
             send_time: now,
             message: msg.into(),
             recv_time: now,
@@ -653,21 +666,15 @@ impl Chat {
             bounce_obj,
         };
 
-        let header = ServiceHeader::new(
-            ServiceType::Chat,
-            CHAT_SUB_TYPE_CHAT_LOBBY_SIGNED_MSG,
-            &vec![],
-        );
+        let header =
+            ServiceHeader::new(self.get_id(), CHAT_SUB_TYPE_CHAT_LOBBY_SIGNED_MSG, &vec![]);
         if !sign_item!(self, msg, header) {
             return;
         }
 
         let payload = to_retroshare_wire(&msg);
-        let header = ServiceHeader::new(
-            ServiceType::Chat,
-            CHAT_SUB_TYPE_CHAT_LOBBY_SIGNED_MSG,
-            &payload,
-        );
+        let header =
+            ServiceHeader::new(self.get_id(), CHAT_SUB_TYPE_CHAT_LOBBY_SIGNED_MSG, &payload);
         let packet = Packet::new_without_location(header.into(), payload);
 
         for (peer, _) in &lobby.participating_friends {
@@ -760,9 +767,9 @@ impl Chat {
                 }
             }
             Entry::Vacant(_entry) => {
-                // no correponding lobby found, dropping
+                // no corresponding lobby found, dropping
                 warn!(
-                    "received chat message for unkown lobby {}, dropping",
+                    "received chat message for unknown lobby {}, dropping",
                     bounce_obj.publobby_id
                 );
 
@@ -784,7 +791,7 @@ impl Chat {
 
         // TODO reputation
 
-        // check chache
+        // check cache
         self.filter_bouncing_obj(&event.bounce_obj).await
     }
 
@@ -794,7 +801,7 @@ impl Chat {
         }
         // TODO reputation
 
-        // check chache
+        // check cache
         self.filter_bouncing_obj(&msg.bounce_obj).await
     }
 
@@ -836,7 +843,7 @@ impl Chat {
         state
     }
 
-    fn verify_message(&self, key_id: &KeyId, data_signed: &[u8], signature: &[u8]) -> bool {
+    async fn verify_message(&self, key_id: &KeyId, data_signed: &[u8], signature: &[u8]) -> bool {
         let key_id = key_id.to_owned().into();
 
         // get keys
@@ -845,18 +852,20 @@ impl Chat {
             .get_service_data()
             .gxs_id()
             .get_pub_keys_by_id(&key_id)
+            .await
         {
             Some(key) => key,
             None => {
                 // this can be common (and thus quite noisy)
-                debug!("failed to find key for {key_id}");
+                info!("failed to find key for {key_id}");
                 return false;
             }
         };
 
-        assert!((key.key_flags & 0x40) > 0);
+        // assert!((key.key_flags & 0x40) > 0);
+        assert!(key.key_flags.contains(TlvKeyFlags::DISTRIBUTE_ADMIN));
 
-        match verify_signature(key, data_signed, signature) {
+        match verify_signature(&key, data_signed, signature) {
             Ok(true) => true,
             Ok(false) => false,
             Err(err) => {
@@ -866,7 +875,7 @@ impl Chat {
         }
     }
 
-    fn sign_message(&self, key_id: &KeyId, data_to_sign: &[u8]) -> Option<Vec<u8>> {
+    async fn sign_message(&self, key_id: &KeyId, data_to_sign: &[u8]) -> Option<Vec<u8>> {
         let key_id = key_id.to_owned().into();
 
         // get keys
@@ -875,19 +884,21 @@ impl Chat {
             .get_service_data()
             .gxs_id()
             .get_priv_keys_by_id(&key_id)
+            .await
         {
             Some(key) => key,
             None => {
-                // this can be common (and thus quite noisy)
-                debug!("failed to find key for {key_id}");
+                // we miss out own key?!
+                warn!("failed to find key for {key_id}");
                 return None;
             }
         };
 
-        assert!((key.key_flags & 0x02) > 0);
+        // assert!((key.key_flags & 0x02) > 0);
+        assert!(key.key_flags.contains(TlvKeyFlags::TYPE_FULL));
 
-        let res = match generate_signature(key, data_to_sign) {
-            Ok(signaturre) => Some(signaturre),
+        let res = match generate_signature(&key, data_to_sign) {
+            Ok(signature) => Some(signature),
             Err(err) => {
                 warn!("failed to sign: {err:#}");
                 None
@@ -895,7 +906,10 @@ impl Chat {
         };
 
         if let Some(signature) = &res {
-            if !self.verify_message(&key_id.into(), data_to_sign, &signature) {
+            if !self
+                .verify_message(&key_id.into(), data_to_sign, &signature)
+                .await
+            {
                 log::error!("signed message does not pass validation!");
             }
         }
@@ -925,7 +939,7 @@ impl Service for Chat {
 
         let mut packets = vec![];
         if timers
-            .get_mut(&LOBBY_MAINTAINANCE_INTERVAL.0.to_string())
+            .get_mut(&LOBBY_MAINTENANCE_INTERVAL.0.to_string())
             .unwrap()
             .expired()
         {
@@ -943,7 +957,7 @@ impl Service for Chat {
                     let item = ChatLobbyConnectChallengeItem { challenge_code };
                     let payload = to_retroshare_wire(&item);
                     let header = ServiceHeader::new(
-                        ServiceType::Chat,
+                        self.get_id(),
                         CHAT_SUB_TYPE_CHAT_LOBBY_CHALLENGE,
                         &payload,
                     );
@@ -1098,6 +1112,49 @@ mod test_chat {
                 4347301314802127616,
                 11792202543108611761,
                 3035154411918242558,
+            ),
+            // the following are from Xeres
+            (
+                "01dc22f128d9495541f780a254b89630".into(),
+                10949563242187165295,
+                140257447151802099,
+                1540395435043678632,
+            ),
+            (
+                "01dc22f128d9495541f780a254b89630".into(),
+                10949563242187165295,
+                3128845210392038968,
+                9133905927926710723,
+            ),
+            (
+                "01dc22f128d9495541f780a254b89630".into(),
+                10949563242187165295,
+                15552989625937603562,
+                2213486716447545487,
+            ),
+            (
+                "01dc22f128d9495541f780a254b89630".into(),
+                10949563242187165295,
+                140257447151802099,
+                1540395435043678632,
+            ),
+            (
+                "01dc22f128d9495541f780a254b89630".into(),
+                10949563242187165295,
+                3128845210392038968,
+                9133905927926710723,
+            ),
+            (
+                "01dc22f128d9495541f780a254b89630".into(),
+                10949563242187165295,
+                15552989625937603562,
+                2213486716447545487,
+            ),
+            (
+                "01dc22f128d9495541f780a254b89630".into(),
+                10949563242187165295,
+                140257447151802099,
+                1540395435043678632,
             ),
         ];
 

@@ -3,6 +3,8 @@ use std::fmt::Display;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
+use crate::basics::RsPacket;
+
 // const uint32_t RS_STATUS_OFFLINE  = 0x0000;
 // const uint32_t RS_STATUS_AWAY     = 0x0001;
 // const uint32_t RS_STATUS_BUSY     = 0x0002;
@@ -84,4 +86,14 @@ pub struct StatusItem {
     #[serde(rename(serialize = "sendTime", deserialize = "sendTime"))]
     pub send_time: u32,
     pub status: StatusValue,
+}
+
+impl RsPacket for StatusItem {
+    fn get_service(&self) -> u16 {
+        0x0102
+    }
+    
+    fn get_sub_type(&self) -> u8 {
+        0x01
+    }
 }

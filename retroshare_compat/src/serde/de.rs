@@ -210,7 +210,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
         V: Visitor<'de>,
     {
         // assume TLV!!
-        let len = NetworkEndian::read_u32(&self.input[2..6]) as usize; // skip len!
+        let len = NetworkEndian::read_u32(&self.input[2..6]) as usize; // skip tag!
         let bytes: Vec<u8> = self.input.drain(0..len).collect();
         visitor.visit_bytes(&bytes)
     }
@@ -220,7 +220,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut RetroShareWireDeserializer<'de> 
         V: Visitor<'de>,
     {
         // assume TLV!!
-        let len = NetworkEndian::read_u32(&self.input[2..6]) as usize; // skip len!
+        let len = NetworkEndian::read_u32(&self.input[2..6]) as usize; // skip tag!
         let bytes: Vec<u8> = self.input.drain(0..len).collect();
         visitor.visit_bytes(&bytes)
     }

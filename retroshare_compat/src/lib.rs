@@ -1,9 +1,4 @@
-#[cfg(not(feature = "cookie-nom"))]
 use byteorder::{ByteOrder, NetworkEndian};
-#[cfg(feature = "cookie-nom")]
-use cookie_factory;
-#[cfg(feature = "cookie-nom")]
-use nom;
 
 pub mod basics;
 pub mod config;
@@ -15,6 +10,8 @@ pub mod serde;
 pub mod services;
 pub mod tlv;
 pub mod webui;
+
+// pub mod foo;
 
 // write
 macro_rules! gen_writer {

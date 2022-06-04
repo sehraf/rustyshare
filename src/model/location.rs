@@ -71,6 +71,12 @@ impl Location {
         RwLockWriteGuard<Vec<TlvIpAddressInfo>>,
         RwLockWriteGuard<Vec<TlvIpAddressInfo>>,
     ) {
+        // calling this function means that there might be a more recent ip address available
+        // trigger a reconnect
+        *self.last_connection_attempt.write().unwrap() = Instant::now()
+            .checked_sub(PEER_CONNECTION_TRY_DURATION)
+            .unwrap();
+
         let local = self.ips_local.write().unwrap();
         let external = self.ips_external.write().unwrap();
 

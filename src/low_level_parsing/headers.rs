@@ -1,7 +1,8 @@
 use std::fmt::Display;
 
-use crate::{error::*, services::ServiceType};
+use crate::error::*;
 use byteorder::{BigEndian, ByteOrder, NetworkEndian};
+use retroshare_compat::services::ServiceType;
 
 pub const HEADER_SIZE: usize = 8;
 
@@ -315,7 +316,7 @@ impl From<Header> for ClassHeader {
 mod tests {
     use std::{assert_eq, convert::TryInto};
 
-    use crate::services::ServiceType;
+    use ::retroshare_compat::services::ServiceType;
 
     use super::Header;
 

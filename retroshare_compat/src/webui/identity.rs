@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::basics::{GxsIdHex, PgpIdHex};
+use crate::{
+    basics::{GxsIdHex, PgpIdHex},
+    gxs::sqlite::database::GroupFlags,
+};
 
 use super::{chat::GxsImage, XInt64};
 
@@ -65,7 +68,7 @@ pub struct IdentityDetails {
     #[serde(rename(serialize = "mNickname", deserialize = "mNickname"))]
     pub nickname: String,
     #[serde(rename(serialize = "mFlags", deserialize = "mFlags"))]
-    pub flags: u32,
+    pub flags: GroupFlags,
     #[serde(rename(serialize = "mPgpId", deserialize = "mPgpId"))]
     pub pgp_id: PgpIdHex,
     #[serde(rename(serialize = "mReputation", deserialize = "mReputation"))]

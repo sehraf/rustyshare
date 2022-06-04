@@ -7,7 +7,7 @@ use actix_web::{
 };
 use retroshare_compat::{
     basics::{GxsId, GxsIdHex, PgpIdHex},
-    gxs::db::GroupMetaData,
+    gxs::sqlite::database::{GroupFlags, GxsGroupMeta, SubscribeFlags},
     webui::identity::IdentityDetails,
 };
 use serde::Serialize;
@@ -18,7 +18,7 @@ use crate::{gen_webui_param_type, gen_webui_return_type, model::DataCore};
 #[derive(Serialize)]
 pub struct IdentitiesSummaries {
     retval: bool,
-    ids: Vec<GroupMetaData>,
+    ids: Vec<GxsGroupMeta>,
 }
 #[post("/getIdentitiesSummaries")]
 pub async fn rs_identity_get_identities_summaries(
@@ -54,9 +54,13 @@ pub async fn rs_identity_get_own_signed_ids(
         .await
         .iter()
         .filter_map(|entry| {
+            // FIXME, see below
             // FLAG_AUTHOR_AUTHENTICATION_GPG   0x00000100
             // GROUP_SUBSCRIBE_ADMIN            0x01
-            if (entry.group_flags & 0x100) > 0 && (entry.subscribe_flags & 0x1) > 0 {
+            // if (entry.group_flags & 0x100) > 0 && (entry.subscribe_flags & 0x1) > 0 {
+            if entry.group_flags.contains(GroupFlags::REALID)
+                && entry.subscribe_flags.contains(SubscribeFlags::ADMIN)
+            {
                 Some(entry.group_id.to_owned())
             } else {
                 None
@@ -77,7 +81,7 @@ pub async fn rs_identity_get_own_signed_ids(
 //  */
 //  virtual bool getOwnPseudonimousIds(std::vector<RsGxsId>& ids) = 0;
 #[post("/getOwnPseudonimousIds")]
-pub async fn rs_identity_get_own_pseudonimous_ids(
+pub async fn rs_identity_get_own_pseudonymous_ids(
     state: web::Data<Arc<DataCore>>,
 ) -> Result<impl Responder> {
     let ids = state
@@ -87,9 +91,17 @@ pub async fn rs_identity_get_own_pseudonimous_ids(
         .await
         .iter()
         .filter_map(|entry| {
+            // FIXME this is the old code
+            // >>>>>
             // FLAG_AUTHOR_AUTHENTICATION_GPG   0x00000100
             // GROUP_SUBSCRIBE_ADMIN            0x01
-            if (entry.group_flags & 0x100) == 0 && (entry.subscribe_flags & 0x1) > 0 {
+            // if (entry.group_flags & 0x100) == 0 && (entry.subscribe_flags & 0x1) > 0 {
+            // <<<<<<
+            //
+            // which doesn't make any sense ... FLAG_AUTHOR_AUTHENTICATION_GPG is
+            if !entry.group_flags.contains(GroupFlags::REALID)
+                && entry.subscribe_flags.contains(SubscribeFlags::ADMIN)
+            {
                 Some(entry.group_id.to_owned())
             } else {
                 None
@@ -149,6 +161,6 @@ pub fn get_entry_points() -> actix_web::Scope {
     web::scope("/rsIdentity")
         .service(rs_identity_get_identities_summaries)
         .service(rs_identity_get_own_signed_ids)
-        .service(rs_identity_get_own_pseudonimous_ids)
+        .service(rs_identity_get_own_pseudonymous_ids)
         .service(rs_identity_get_id_details)
 }

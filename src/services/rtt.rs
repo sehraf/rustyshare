@@ -13,7 +13,7 @@ use crate::{
     utils::{simple_stats::StatsCollection, Timer, Timers},
 };
 
-use super::ServiceType;
+use ::retroshare_compat::services::ServiceType;
 
 const RTT_TIMER: (&str, Duration) = ("rtt", Duration::from_secs(5));
 

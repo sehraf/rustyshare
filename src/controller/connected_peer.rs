@@ -161,10 +161,9 @@ impl ConnectedPeer {
                 Err(std::io::Error::from(std::io::ErrorKind::ConnectionReset).into())
             }
             HEADER_SIZE => {
-                debug!(">>> got header {HEADER_SIZE} bytes {header:02X?}");
-
                 // parse header
                 let header = Header::try_parse(&header)?;
+                debug!(">>> got header {header:?}");
 
                 let payload_size = header.get_payload_size();
                 debug!(">>> reading {} bytes payload", payload_size);

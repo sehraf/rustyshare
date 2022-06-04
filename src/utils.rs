@@ -104,7 +104,7 @@ impl Timer {
 
     /// Checks if the timer is expired.
     /// 
-    /// Also rearrms recurring timers.
+    /// Also rearms recurring timers.
     pub fn expired(&mut self) -> bool {
         if SystemTime::now() >= self.end {
             match &mut self.ty {

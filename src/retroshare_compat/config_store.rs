@@ -9,7 +9,7 @@ use std::{fs::File, io::Read, path};
 
 use super::ssl_key::SslKey;
 
-pub fn decryp_file(file: &path::Path, keys: SslKey) -> Result<Vec<u8>, std::io::Error> {
+pub fn decrypt_file(file: &path::Path, keys: SslKey) -> Result<Vec<u8>, std::io::Error> {
     let read_u32 = |data: &Vec<u8>, offset: &mut usize| -> u32 {
         const SIZE: usize = 4;
         let r = NetworkEndian::read_u32(&data[*offset..*offset + SIZE]);

@@ -1,5 +1,5 @@
 use hex::FromHex;
-use rusqlite::types::FromSql;
+use rusqlite::{types::FromSql, ToSql};
 use serde::{Deserialize, Serialize};
 use std::{
     convert::{Infallible, TryInto},
@@ -9,6 +9,11 @@ use std::{
 };
 
 use crate::tlv::tlv_string::StringTagged;
+
+pub trait RsPacket {
+    fn get_service(&self) -> u16;
+    fn get_sub_type(&self) -> u8;
+}
 
 // namespace _RsIdSize
 // {
@@ -43,7 +48,7 @@ const SHA256: usize = 32;
 
 macro_rules! gen_generic_id_type {
     ($name:ident, $width:expr) => {
-        #[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+        #[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize, PartialOrd, Ord)]
         pub struct $name(pub [u8; $width]);
 
         impl Default for $name {
@@ -141,6 +146,12 @@ macro_rules! gen_generic_id_type {
             }
         }
 
+        impl ToSql for $name {
+            fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+                Ok(self.to_string().into())
+            }
+        }
+
         impl FromHex for $name {
             type Error = Infallible;
 
@@ -172,6 +183,12 @@ pub type FileHash = Sha1CheckSum;
 
 impl From<GxsGroupId> for GxsId {
     fn from(g: GxsGroupId) -> Self {
+        g.0.into()
+    }
+}
+
+impl From<GxsId> for GxsGroupId {
+    fn from(g: GxsId) -> Self {
         g.0.into()
     }
 }

@@ -23,7 +23,7 @@ use crate::{
     },
 };
 
-use super::ServiceType;
+use ::retroshare_compat::services::ServiceType;
 
 const TURTLE_SUB_TYPE_STRING_SEARCH_REQUEST: u8 = 0x01;
 const TURTLE_SUB_TYPE_FT_SEARCH_RESULT: u8 = 0x02;
