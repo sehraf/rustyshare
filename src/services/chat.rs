@@ -7,7 +7,7 @@ use std::{
 
 use async_trait::async_trait;
 use log::{debug, info, trace, warn};
-use rand::random;
+use nanorand::Rng;
 use retroshare_compat::{
     basics::GxsId,
     events::EventType,
@@ -507,25 +507,39 @@ impl Chat {
         vec![packet]
     }
 
-    async fn build_bouncing_obj(&self, lobby: &Lobby, key_id: &KeyId) -> ChatLobbyBouncingObject {
-        let msg_id = random::<u64>();
+    async fn build_bouncing_obj(
+        &self,
+        lobby_id: ChatLobbyId,
+        key_id: &KeyId,
+    ) -> ChatLobbyBouncingObject {
+        let msg_id = nanorand::WyRand::new().generate();
         let details = {
-            let meta = self
-                .core
+            // let meta = self
+            //     .core
+            //     .get_service_data()
+            //     .gxs_id()
+            //     .get_identities_summaries()
+            //     .await;
+            // meta.iter()
+            //     .find(|entry| entry.group_id.to_string() == key_id.to_string())
+            //     .unwrap()
+            //     .to_owned()
+            self.core
                 .get_service_data()
                 .gxs_id()
-                .get_identities_summaries()
-                .await;
-            meta.iter()
-                .find(|entry| entry.group_id.to_string() == key_id.to_string())
+                .database
+                .lock()
+                .await
+                .get_grp_meta(&vec![key_id.to_string().into()])
+                .into_iter()
+                .nth(0)
                 .unwrap()
-                .to_owned()
         };
 
         ChatLobbyBouncingObject {
-            publobby_id: lobby.lobby_id,
+            publobby_id: lobby_id,
             msg_id,
-            nick: details.group_name.into(),
+            nick: details.group_name.to_owned().into(),
             signature: Toggleable::new(TlvKeySignature::new(TlvKeySignatureInner::new(
                 key_id.to_owned(),
             ))),
@@ -544,7 +558,7 @@ impl Chat {
             .as_secs() as u32;
         let key_id: KeyId = lobby.gxs_id.unwrap().into();
 
-        let bounce_obj = self.build_bouncing_obj(lobby, &key_id).await;
+        let bounce_obj = self.build_bouncing_obj(lobby.lobby_id, &key_id).await;
         let mut event = ChatLobbyEventItem {
             event_type: event,
             send_time: now,
@@ -616,8 +630,8 @@ impl Chat {
     }
 
     async fn join_lobby(&self, lobby: &mut Lobby, gxs_id: Arc<GxsId>) {
-        // join
-        info!("[Chat] joining lobby {}", lobby.lobby_name);
+        info!("joining lobby {}", lobby.lobby_name);
+
         lobby.joined = true;
         lobby.gxs_id = Some(*gxs_id);
         *lobby
@@ -646,6 +660,26 @@ impl Chat {
         }
     }
 
+    async fn leave_lobby(&self, lobby: &mut Lobby) {
+        info!("leaving lobby {}", lobby.lobby_name);
+
+        lobby.joined = false;
+        if let Some(gxs_id) = lobby.gxs_id.take() {
+            // not sure how this can happen though ..
+            lobby.participants.remove(&gxs_id);
+        }
+
+        // send leave event
+        for packet in self
+            .send_lobby_event(lobby, ChatLobbyEvent::PeerLeft, None)
+            .await
+        {
+            self.core_tx
+                .send(Intercom::Send(packet))
+                .expect("failed to send");
+        }
+    }
+
     async fn send_message_lobby(&self, lobby: &Lobby, msg: &str) {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -653,7 +687,7 @@ impl Chat {
             .as_secs() as u32;
         let key_id: KeyId = lobby.gxs_id.unwrap().into();
 
-        let bounce_obj = self.build_bouncing_obj(lobby, &key_id).await;
+        let bounce_obj = self.build_bouncing_obj(lobby.lobby_id, &key_id).await;
         let msg_obj = ChatMsgItem {
             chat_flags: ChatLobbyFlags::LOBBY | ChatLobbyFlags::PRIVATE,
             send_time: now,
@@ -701,17 +735,29 @@ impl Chat {
                         self.join_lobby(lobby, gxs_id).await;
                     }
                 }
-                ChatCmd::LeaveLobby(_lobby) => warn!("LeaveLobby: unimplemented"),
+                ChatCmd::LeaveLobby(lobby) => {
+                    info!("leaving lobby {lobby:?}");
+
+                    let mut lock = data.lobbies.write().await;
+                    if let Some(lobby) = lock.get_mut(&lobby) {
+                        self.leave_lobby(lobby).await;
+                    }
+                }
                 ChatCmd::SendMessage(lobby_id, msg) => {
                     info!("SendMessage: msg {msg} to {lobby_id:?}");
 
-                    let lock = data.lobbies.read().await;
-
                     match lobby_id.ty {
                         ChatIdType::TypeLobby => {
-                            if let Some(lobby) = lock.get(&lobby_id.lobby_id.into()) {
-                                self.send_message_lobby(lobby, &msg).await;
-                            }
+                            // get lobby but don't hold the lock, tbd if this is useful
+                            let lobby = if let Some(lobby) =
+                                data.lobbies.read().await.get(&lobby_id.lobby_id.into())
+                            {
+                                lobby.to_owned()
+                            } else {
+                                return;
+                            };
+
+                            self.send_message_lobby(&lobby, &msg).await;
                         }
                         _ => warn!("chat type {:?} is not supported", lobby_id.ty),
                     }
@@ -876,7 +922,7 @@ impl Chat {
     }
 
     async fn sign_message(&self, key_id: &KeyId, data_to_sign: &[u8]) -> Option<Vec<u8>> {
-        let key_id = key_id.to_owned().into();
+        let key_id = key_id.to_owned();
 
         // get keys
         let key = match self

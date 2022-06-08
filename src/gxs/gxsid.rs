@@ -5,7 +5,7 @@ use openssl::{
     rsa::Rsa,
     sign::{Signer, Verifier},
 };
-use retroshare_compat::tlv::tlv_keys::{TlvKeyFlags, TlvPublicRSAKey};
+use retroshare_compat::tlv::tlv_keys::{TlvKeyFlags, TlvPrivateRSAKey, TlvPublicRSAKey};
 
 pub fn verify_signature(
     key: &TlvPublicRSAKey,
@@ -30,7 +30,7 @@ pub fn verify_signature(
 }
 
 pub fn generate_signature(
-    key: &TlvPublicRSAKey,
+    key: &TlvPrivateRSAKey,
     data_to_sign: &[u8],
 ) -> Result<Vec<u8>, openssl::error::ErrorStack> {
     trace!("sign key {}", hex::encode(key.key_data.as_slice()));

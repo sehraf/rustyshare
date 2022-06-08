@@ -32,7 +32,7 @@ Currently mixing services, databases and nxs, this is a large refactoring TODO
 // type NxsTransactionGxsId = NxsTransaction<SERVICE_GXS_GXSID>;
 
 const CHECK_SYNC: (&str, Duration) = ("sync check", Duration::from_secs(60));
-const LOAD_MISSING_IDS: (&str, Duration) = ("missing ids", Duration::from_secs(10));
+const LOAD_MISSING_IDS: (&str, Duration) = ("missing ids", Duration::from_secs(1));
 
 pub struct GxsId {
     #[allow(unused)]
@@ -134,23 +134,33 @@ impl GxsId {
         debug!("trying to load ids from database: {ids:?}");
 
         // first, try loading from DB
-        let lock = self.core.get_service_data().gxs_id().database.lock().await;
-        let meta = lock.get_grp_meta(&ids.iter().copied().collect());
-        // .into_iter()
-        // .filter(|group| ids.contains(&group.group_id))
-        // .collect();
-        // remove found ids
-        for group in meta.into_iter() {
-            ids.remove(&group.group_id);
-            let data = lock
-                .get_grp_data(&vec![group.group_id])
-                .first()
-                .unwrap()
-                .to_owned();
+        let lock_db = self.core.get_service_data().gxs_id().database.lock().await;
+        let meta = lock_db.get_grp_meta(&ids.iter().copied().collect());
+        let found_entries: Vec<_> = meta
+            .into_iter()
+            .map(|mut group| {
+                // remove entry
+                ids.remove(&group.group_id);
+
+                // load data
+                let data = lock_db
+                    .get_grp_data(&vec![group.group_id])
+                    .into_iter()
+                    .nth(0)
+                    .unwrap();
+                group.set_blobs(data);
+
+                group
+            })
+            .collect();
+        drop(lock_db);
+
+        // write found entries into mem cache
+        for group in found_entries {
             self.core
                 .get_service_data()
                 .gxs_id()
-                .add_group(&group, &data)
+                .add_group(&group)
                 .await;
         }
 

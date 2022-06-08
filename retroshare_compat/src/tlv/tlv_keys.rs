@@ -1,8 +1,11 @@
-use std::{collections::HashSet, fmt, ops::Deref};
+use std::{
+    collections::HashSet,
+    fmt::{self, Debug, Display},
+    ops::{Deref, DerefMut},
+};
 
 use bitflags::bitflags;
 use bitflags_serde_shim::impl_serde_for_bitflags;
-use log::warn;
 use rusqlite::{types::FromSql, ToSql};
 use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
 use serde_repr::{Deserialize_repr, Serialize_repr};
@@ -15,7 +18,7 @@ use crate::{
     write_u16, write_u32,
 };
 
-use super::{tlv_map::TlvMap, tlv_string::StringTagged, Tlv, TlvBinaryData, TLV_HEADER_SIZE};
+use super::{tlv_map::TlvMap, tlv_string::StringTagged, Tlv, Tlv2, TlvBinaryData, TLV_HEADER_SIZE};
 
 // class RsTlvKeySignature: public RsTlvItem
 // {
@@ -26,43 +29,62 @@ use super::{tlv_map::TlvMap, tlv_string::StringTagged, Tlv, TlvBinaryData, TLV_H
 
 // BUG this is a RS bug, the GxsId is serialized as a string
 // Use a newtype to handle it easier.
-#[derive(Debug, Default, PartialEq, Eq, Serialize, Clone, Deserialize, Hash)]
-pub struct KeyId(StringTagged<TLV_TYPE_STR_KEYID>);
+#[derive(Default, PartialEq, Eq, Serialize, Clone, Deserialize, Hash)]
+// pub struct KeyId(StringTagged<TLV_TYPE_STR_KEYID>);
+pub struct KeyId(Tlv2<TLV_TYPE_STR_KEYID, GxsId>);
 
 impl Deref for KeyId {
-    type Target = StringTagged<TLV_TYPE_STR_KEYID>;
+    type Target = GxsId;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
+impl Debug for KeyId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", hex::encode(&self.0 .0))
+    }
+}
+
 impl From<KeyId> for GxsId {
     fn from(id: KeyId) -> Self {
-        id.to_string().into()
+        *id.0.to_owned()
     }
 }
 
 impl From<GxsId> for KeyId {
     fn from(id: GxsId) -> Self {
-        Self(id.to_string().into())
+        Self(id.into())
     }
 }
 
 impl From<KeyId> for GxsGroupId {
     fn from(id: KeyId) -> Self {
-        id.to_string().into()
+        (*id.0.to_owned()).into()
     }
 }
 
 impl From<GxsGroupId> for KeyId {
     fn from(id: GxsGroupId) -> Self {
-        Self(id.to_string().into())
+        Self(GxsId::from(id.0).into())
+    }
+}
+
+impl From<[u8; 16]> for KeyId {
+    fn from(x: [u8; 16]) -> Self {
+        Self(GxsId::from(x).into())
     }
 }
 
 impl PartialEq<GxsId> for KeyId {
     fn eq(&self, other: &GxsId) -> bool {
         self.to_string() == other.to_string()
+    }
+}
+
+impl Display for KeyId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.deref())
     }
 }
 
@@ -111,7 +133,6 @@ pub type TlvKeySignatureSet =
 
 impl FromSql for TlvKeySignatureSet {
     fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
-        warn!("{value:?}");
         match value.as_bytes_or_null()? {
             Some(bytes) => Ok(from_retroshare_wire_result(&mut bytes.into())
                 .map_err(|err| rusqlite::types::FromSqlError::Other(Box::new(err)))?),
@@ -122,9 +143,13 @@ impl FromSql for TlvKeySignatureSet {
 
 impl ToSql for TlvKeySignatureSet {
     fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        Ok(to_retroshare_wire_result(self)
-            .map_err(|err| rusqlite::Error::ToSqlConversionFailure(err.into()))?
-            .into())
+        if self.0.is_empty() {
+            Ok(rusqlite::types::Null.into())
+        } else {
+            Ok(to_retroshare_wire_result(self)
+                .map_err(|err| rusqlite::Error::ToSqlConversionFailure(err.into()))?
+                .into())
+        }
     }
 }
 
@@ -164,29 +189,55 @@ pub struct TlvRSAKeyInner {
 }
 type TlvRSAKey = Tlv<TLV_TYPE_SECURITY_KEY, TlvRSAKeyInner>;
 
-// // The two classes below are by design incompatible, making it impossible to pass a private key as a public key
+// The two classes below are by design incompatible, making it impossible to pass a private key as a public key
 
-// class RsTlvPrivateRSAKey: public RsTlvRSAKey
-// {
-// public:
-// 	RsTlvPrivateRSAKey():RsTlvRSAKey() {}
-// 	virtual ~RsTlvPrivateRSAKey() {}
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
+pub struct TlvPublicRSAKey(TlvRSAKey);
 
-// 	virtual bool checkKey() const  ;
-// };
+impl Deref for TlvPublicRSAKey {
+    type Target = TlvRSAKeyInner;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
-pub type TlvPrivateRSAKey = TlvRSAKey;
+impl DerefMut for TlvPublicRSAKey {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.deref_mut()
+    }
+}
 
-// class RsTlvPublicRSAKey: public RsTlvRSAKey
-// {
-// public:
-// 	RsTlvPublicRSAKey():RsTlvRSAKey() {}
-// 	virtual ~RsTlvPublicRSAKey() {}
+impl From<TlvRSAKey> for TlvPublicRSAKey {
+    fn from(key: TlvRSAKey) -> Self {
+        // this must be checked before (TODO? use try_into?)
+        assert!(key.key_flags.contains(TlvKeyFlags::TYPE_PUBLIC_ONLY));
+        Self(key.into())
+    }
+}
 
-// 	virtual bool checkKey() const  ;
-// };
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
+pub struct TlvPrivateRSAKey(TlvRSAKey);
 
-pub type TlvPublicRSAKey = TlvRSAKey;
+impl Deref for TlvPrivateRSAKey {
+    type Target = TlvRSAKeyInner;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<TlvRSAKey> for TlvPrivateRSAKey {
+    fn from(key: TlvRSAKey) -> Self {
+        // this must be checked before (TODO? use try_into?)
+        assert!(key.key_flags.contains(TlvKeyFlags::TYPE_FULL));
+        Self(key.into())
+    }
+}
+
+impl DerefMut for TlvPrivateRSAKey {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.deref_mut()
+    }
+}
 
 // class RsTlvSecurityKeySet: public RsTlvItem
 // {
@@ -202,7 +253,7 @@ pub struct TlvSecurityKeySet {
     pub private_keys: HashSet<TlvPrivateRSAKey>,
 }
 
-// neet do manually implement TlvSecurityKeySet since both member `public_keys` and `private_keys` cannot be distingquised once serialized
+// need do manually implement TlvSecurityKeySet since both member `public_keys` and `private_keys` cannot be distinguished once serialized
 
 impl Serialize for TlvSecurityKeySet {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -268,10 +319,10 @@ impl<'de> Deserialize<'de> for TlvSecurityKeySet {
                         from_retroshare_wire_result(&mut bytes).expect("failed to deserialize");
                     match key.key_flags {
                         flags if flags.contains(TlvKeyFlags::TYPE_PUBLIC_ONLY) => {
-                            public_keys.insert(key);
+                            public_keys.insert(key.into());
                         }
                         flags if flags.contains(TlvKeyFlags::TYPE_FULL) => {
-                            private_keys.insert(key);
+                            private_keys.insert(key.into());
                         }
                         flags @ _ => {
                             log::error!("unknown flags {flags:?} for TlvRSAKey");

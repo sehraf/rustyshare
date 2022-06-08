@@ -6,8 +6,12 @@ use crate::{
     tlv::{tags::*, tlv_string::StringTagged, TlvBinaryData},
 };
 
-use self::sqlite::database::{GxsDatabase, GxsGrpDataSql, GxsGrpMetaSql, GxsMsgMetaSql};
+use self::sqlite::{
+    database::GxsDatabase,
+    types::{GxsGroup, GxsGrpDataSql, GxsGrpMetaSql, GxsMsgMetaSql},
+};
 
+pub mod service_string;
 pub mod sqlite;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -28,11 +32,11 @@ impl GxsDatabaseBackend {
         GxsDatabaseBackend { ty, db }
     }
 
-    pub fn get_grp_meta(&self, group_ids: &Vec<GxsGroupId>) -> Vec<GxsGrpMetaSql> {
+    pub fn get_grp_meta(&self, group_ids: &Vec<GxsGroupId>) -> Vec<GxsGroup> {
         let mut res = vec![];
 
         if group_ids.is_empty() {
-            for group_id in self.db.get_grp_ids().unwrap() {
+            for group_id in self.db.get_group_ids().unwrap() {
                 res.extend(self.db.get_grp_meta(&group_id).unwrap());
             }
         } else {
@@ -47,21 +51,31 @@ impl GxsDatabaseBackend {
     pub fn get_grp_data(&self, group_ids: &Vec<GxsGroupId>) -> Vec<GxsGrpDataSql> {
         let mut res = vec![];
 
+        let get = |group_id: &GxsGroupId| -> Vec<GxsGrpDataSql> {
+            match self.db.get_grp_meta(group_id).unwrap() {
+                None => vec![],
+                Some(mut group_meta) => {
+                    self.db.get_grp_data(&mut group_meta).unwrap();
+                    vec![group_meta.get_blobs()]
+                }
+            }
+        };
+
         if group_ids.is_empty() {
-            for group_id in self.db.get_grp_ids().unwrap() {
-                res.extend(self.db.get_grp_data(&group_id).unwrap());
+            for group_id in self.db.get_group_ids().unwrap() {
+                res.extend(get(&group_id));
             }
         } else {
             for group_id in group_ids {
-                res.extend(self.db.get_grp_data(group_id).unwrap());
+                res.extend(get(group_id));
             }
         }
 
         res
     }
 
-    pub fn store_group(&self, meta: &GxsGrpMetaSql, data: &GxsGrpDataSql) {
-        self.db.insert_group(meta, data).unwrap()
+    pub fn store_group(&self, group: &GxsGroup) {
+        self.db.insert_group(group).unwrap()
     }
 
     pub fn get_msg(&self) -> Vec<GxsMsgMetaSql> {
@@ -166,22 +180,23 @@ pub struct NxsSyncGrpItem {
     #[serde(rename(serialize = "grpId", deserialize = "grpId"))]
     pub grp_id: GxsGroupId,
     #[serde(rename(serialize = "publishTs", deserialize = "publishTs"))]
-    pub publish_ts: u32, // to compare to Ts of receiving peer's grp of same id
+    pub publish_ts: u32, // to compare to Ts of receiving peer's grp of same id // BUG this is not i64 = rstime_t
     #[serde(rename(serialize = "authorId", deserialize = "authorId"))]
     pub author_id: GxsId,
 }
 
-impl From<GxsGrpMetaSql> for NxsSyncGrpItem {
-    fn from(meta: GxsGrpMetaSql) -> Self {
-        Self {
-            base: NxsItem { transaction_id: 0 },
-            flag: NxsSyncGrpItemFlags::Response,
-            publish_ts: meta.publish_ts as u32, // BUG rs uses rstime = i64 mostly but not always ...
-            grp_id: meta.group_id,
-            author_id: meta.author_id,
-        }
-    }
-}
+// obsolete
+// impl From<GxsGrpMetaSql> for NxsSyncGrpItem {
+//     fn from(meta: GxsGrpMetaSql) -> Self {
+//         Self {
+//             base: NxsItem { transaction_id: 0 },
+//             flag: NxsSyncGrpItemFlags::Response,
+//             publish_ts: meta.publish_ts as u32, // BUG rs uses rstime_t = i64 mostly but not always ...
+//             grp_id: meta.group_id,
+//             author_id: meta.author_id,
+//         }
+//     }
+// }
 
 // /*!
 //  * Contains serialised group items
@@ -293,6 +308,18 @@ pub struct NxsTransactionItem {
 
     #[serde(skip)]
     pub timestamp: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct GxsReputation {
+    #[serde(rename(serialize = "OverallScore", deserialize = "OverallScore"))]
+    overall_score: i32,
+    #[serde(rename(serialize = "IdScore", deserialize = "IdScore"))]
+    id_score: i32, // PGP, Known, etc.
+    #[serde(rename(serialize = "OwnOpinion", deserialize = "OwnOpinion"))]
+    own_opinion: i32,
+    #[serde(rename(serialize = "PeerOpinion", deserialize = "PeerOpinion"))]
+    peer_opinion: i32,
 }
 
 #[cfg(test)]

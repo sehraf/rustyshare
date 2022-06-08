@@ -6,8 +6,23 @@ So i wanted to learn Rust and though it might be a _good_ idea to implement Retr
 Some parts might still look "c like" and some design pattern might be stupid or "anti Rust".
 --
 
+## Update 3 - _Chat & GxsIDs_:
+  * the `chat` service is stabilized, bugs are fixed and everything is supposed to work ... (_famous last words_)
+  ** i do need to refactor some stuff, for example, handling of (identity) keys.
+  * *GXS*! Yes that one big system that keeps most parts of RS going
+  ** currently only GxsId
+  *** can request missing identities
+  *** can answer (and provide) identity requests
+  ** overall a big mix, need to refactor and untangle the database, nxs and id service
+  ** reads RS database from disk, nothing it written.
+  ** writes received data into an in-memory database (which is also used as a cache)
+  * things i'm unhappy with
+  ** right now there is one big main loop for everything + one per peer. This should be split up into more (async) tasks
+  ** database operations should probably spawned blocking (?)
+  ** there might be deadlocks... i lost track of all the mutex's ... need to refactor that, too
+
 ## Update 2 - _async/await and TLV_:
-  * finally managed to get TLV wroking with serde. Wasn't that hard after
+  * finally managed to get TLV working with serde. Wasn't that hard after
   * all - once you know how to do it.
   ** it's quite easy now, you only have to deal with::
   *** `Tlv` generic TLV type with fixed length content (e.g. a struct)

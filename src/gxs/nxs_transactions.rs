@@ -8,7 +8,7 @@ use log::{debug, info, trace, warn};
 use retroshare_compat::{
     basics::{GxsGroupId, GxsId, PeerId, SslId},
     gxs::{
-        sqlite::database::{GxsCircleType, SubscribeFlags},
+        sqlite::types::{GxsCircleType, SubscribeFlags},
         NxsGrp, NxsItem, NxsSyncGrpItem, NxsSyncGrpItemFlags, NxsSyncGrpReqItem,
         NxsTransactionItem, NxsTransactionItemFlags, NxsTransactionItemType,
     },
@@ -41,7 +41,7 @@ const SUBTYPE_NXS_SYNC_MSG_ITEM: u8 = 0x08;
 const SUBTYPE_NXS_SYNC_MSG_REQ_ITEM: u8 = 0x10;
 #[allow(unused)]
 const SUBTYPE_NXS_MSG_ITEM: u8 = 0x20;
-const SUBTYPE_NXS_TRANSAC_ITEM: u8 = 0x40;
+const SUBTYPE_NXS_TRANSACTION_ITEM: u8 = 0x40;
 #[allow(unused)]
 const SUBTYPE_NXS_GRP_PUBLISH_KEY_ITEM: u8 = 0x80;
 #[allow(unused)]
@@ -134,9 +134,7 @@ impl<const T: u16> NxsTransactionController<T> {
                         .get_grp_meta(&vec![])
                         .into_iter()
                         // .filter(|entry| entry.publish_ts > item.update_ts as i64) // TODO
-                        // .filter(|entry| (entry.subscribe_flags & 0x04) > 0)
                         .filter(|entry| entry.subscribe_flags.contains(SubscribeFlags::SUBSCRIBED))
-                        // .filter(|entry| [0, 1].contains(&entry.circle_type)) // FIXME RsGxsNetService::canSendGrpId
                         .filter(|entry| {
                             [GxsCircleType::Unknown, GxsCircleType::Public]
                                 .contains(&entry.circle_type)
@@ -154,37 +152,41 @@ impl<const T: u16> NxsTransactionController<T> {
                     }
                 }
             }
-            SUBTYPE_NXS_SYNC_GRP_ITEM => {
-                // this should be handled in `handle_incoming_transaction` ... right?
 
-                warn!("sync grp item");
-
-                let item: NxsSyncGrpItem = from_retroshare_wire(&mut packet.payload);
-                warn!("{item:?}");
-            }
+            // TODO
             // SUBTYPE_NXS_SYNC_GRP_STATS_ITEM => (),
-            SUBTYPE_NXS_GRP_ITEM => {
-                // this should be handled in `handle_incoming_transaction` ... right?
-
-                warn!("grp req item");
-
-                let item: NxsGrp<T> = from_retroshare_wire(&mut packet.payload);
-                warn!("{:?} {}", item.base, item.grp_id);
-            }
             // SUBTYPE_NXS_ENCRYPTED_DATA_ITEM => (),
             // SUBTYPE_NXS_SESSION_KEY_ITEM => (),
             // SUBTYPE_NXS_SYNC_MSG_ITEM => (),
             // SUBTYPE_NXS_SYNC_MSG_REQ_ITEM => (),
             // SUBTYPE_NXS_MSG_ITEM => (),
-            SUBTYPE_NXS_TRANSAC_ITEM => {
-                // this should be handled in `handle_incoming_transaction` ... right?
-                warn!("transaction item");
-
-                let item: NxsTransactionItem = from_retroshare_wire(&mut packet.payload);
-                warn!("{item:?}");
-            }
             // SUBTYPE_NXS_GRP_PUBLISH_KEY_ITEM => (),
             // SUBTYPE_NXS_SYNC_PULL_REQUEST_ITEM => (),
+
+            // These should always be handled by `handle_incoming_transaction`
+            // SUBTYPE_NXS_SYNC_GRP_ITEM => {
+            //     // this should be handled in `handle_incoming_transaction` ... right?
+
+            //     warn!("sync grp item");
+
+            //     let item: NxsSyncGrpItem = from_retroshare_wire(&mut packet.payload);
+            //     warn!("{item:?}");
+            // }
+            // SUBTYPE_NXS_GRP_ITEM => {
+            //     // this should be handled in `handle_incoming_transaction` ... right?
+
+            //     warn!("grp req item");
+
+            //     let item: NxsGrp<T> = from_retroshare_wire(&mut packet.payload);
+            //     warn!("{:?} {}", item.base, item.grp_id);
+            // }
+            // SUBTYPE_NXS_TRANSAC_ITEM => {
+            //     // this should be handled in `handle_incoming_transaction` ... right?
+            //     warn!("transaction item");
+
+            //     let item: NxsTransactionItem = from_retroshare_wire(&mut packet.payload);
+            //     warn!("{item:?}");
+            // }
             sub_type => {
                 warn!("[GxsId] received unknown sub typ {sub_type:02X}");
             }
@@ -230,7 +232,7 @@ impl<const T: u16> NxsTransactionController<T> {
                 self.add_item_to_transaction(peer, transaction_id, StoredNxsItem::NxsGrp(item))
                     .await;
             }
-            SUBTYPE_NXS_TRANSAC_ITEM => {
+            SUBTYPE_NXS_TRANSACTION_ITEM => {
                 trace!("transaction item");
 
                 let item: NxsTransactionItem = from_retroshare_wire(&mut packet.payload);
@@ -251,22 +253,26 @@ impl<const T: u16> NxsTransactionController<T> {
                 let mut lock = self.transactions.write().await;
 
                 // Note: used by RS's checks, existing code should be equivalent
-                // let (peer_exists, trans_exists) = match lock.entry(peer.to_owned()) {
-                //     Entry::Occupied(mut entry) => match entry.get_mut().entry(transaction_id) {
-                //         Entry::Occupied(_entry) => (true, true),
-                //         Entry::Vacant(_) => (true, false),
-                //     },
-                //     Entry::Vacant(_) => (false, false),
-                // };
+                #[cfg(debug_assertions)]
+                let (peer_exists, trans_exists) = match lock.entry(peer.to_owned()) {
+                    Entry::Occupied(mut entry) => match entry.get_mut().entry(transaction_id) {
+                        Entry::Occupied(_entry) => (true, true),
+                        Entry::Vacant(_) => (true, false),
+                    },
+                    Entry::Vacant(_) => (false, false),
+                };
+
                 match item.transact_flag {
                     NxsTransactionItemFlags::FlagBegin => {
                         // remote started transaction
 
                         // Note: RS does a check here, we do it later
-                        // if trans_exists {
-                        //     warn!("peer {peer} tries to start a transaction ({transaction_id}) but it already exists!");
-                        //     return vec![];
-                        // }
+                        #[cfg(debug_assertions)]
+                        {
+                            if trans_exists {
+                                warn!("peer {peer} tries to start a transaction ({transaction_id}) but it already exists!");
+                            }
+                        }
 
                         // get peer's entry
                         let peer_entry = lock.entry(peer.to_owned());
@@ -289,10 +295,12 @@ impl<const T: u16> NxsTransactionController<T> {
                         // we started a transaction
 
                         // Note: RS does a check here, we do it later
-                        // if !peer_exists || !trans_exists {
-                        //     warn!("peer {peer} tries to acknowledge a transaction ({transaction_id}) but it doesn't exists!");
-                        //     return vec![];
-                        // }
+                        #[cfg(debug_assertions)]
+                        {
+                            if !peer_exists || !trans_exists {
+                                warn!("peer {peer} tries to acknowledge a transaction ({transaction_id}) but it doesn't exists!");
+                            }
+                        }
 
                         // get own entry (already set)
                         let peer_entry = lock.entry(peer);
@@ -326,10 +334,12 @@ impl<const T: u16> NxsTransactionController<T> {
                         // transaction finished
 
                         // Note: RS does a check here, we do it later
-                        // if !peer_exists || !trans_exists {
-                        //     warn!("peer {peer} tries to finish a transaction ({transaction_id}) but it doesn't exists!");
-                        //     return vec![];
-                        // }
+                        #[cfg(debug_assertions)]
+                        {
+                            if !peer_exists || !trans_exists {
+                                warn!("peer {peer} tries to finish a transaction ({transaction_id}) but it doesn't exists!");
+                            }
+                        }
 
                         // get own entry (already set)
                         let peer_entry = lock.entry(peer);
@@ -376,6 +386,7 @@ impl<const T: u16> NxsTransactionController<T> {
         item: StoredNxsItem<T>,
     ) {
         debug!("received part of transaction {transaction_id}");
+        trace!("{item:?}");
 
         let mut lock = self.transactions.write().await;
         let peer_entry = lock.entry(peer.to_owned());
@@ -412,6 +423,9 @@ impl<const T: u16> NxsTransactionController<T> {
                     // transaction is removed below
                 }
             });
+
+            // TODO
+            // we probably need some timestamp management here...
 
             if own_id == peer_id {
                 // our transactions
@@ -483,8 +497,11 @@ impl<const T: u16> NxsTransactionController<T> {
                                 update_ts: 0,
                             };
                             let payload = to_retroshare_wire(&item);
-                            let header =
-                                ServiceHeader::new(T.into(), SUBTYPE_NXS_TRANSAC_ITEM, &payload);
+                            let header = ServiceHeader::new(
+                                T.into(),
+                                SUBTYPE_NXS_TRANSACTION_ITEM,
+                                &payload,
+                            );
                             packets.push(Packet::new(header.into(), payload, peer_id.to_owned()));
 
                             transaction.state = NxsTransactionState::Receiving;
@@ -514,8 +531,11 @@ impl<const T: u16> NxsTransactionController<T> {
                                 update_ts: 0,
                             };
                             let payload = to_retroshare_wire(&item);
-                            let header =
-                                ServiceHeader::new(T.into(), SUBTYPE_NXS_TRANSAC_ITEM, &payload);
+                            let header = ServiceHeader::new(
+                                T.into(),
+                                SUBTYPE_NXS_TRANSACTION_ITEM,
+                                &payload,
+                            );
                             packets.push(Packet::new(header.into(), payload, peer_id.to_owned()));
 
                             if self.process_transaction_for_decryption(transaction).await {
@@ -572,7 +592,7 @@ impl<const T: u16> NxsTransactionController<T> {
                             NxsTransactionItemType::TypeGrpListReq => {
                                 // peer requested groups
                                 if let Some(packet) =
-                                    self.gen_send_grps_transaction(transaction).await
+                                    self.send_groups_transaction(transaction).await
                                 {
                                     packets.push(packet);
                                 }
@@ -624,7 +644,7 @@ impl<const T: u16> NxsTransactionController<T> {
         packets
     }
 
-    async fn gen_send_grps_transaction(&self, transaction: NxsTransaction<T>) -> Option<Packet> {
+    async fn send_groups_transaction(&self, transaction: NxsTransaction<T>) -> Option<Packet> {
         let transaction_id = self.get_next_transaction_number().await;
 
         let peer_id = transaction.peer.to_owned();
@@ -634,14 +654,18 @@ impl<const T: u16> NxsTransactionController<T> {
             .into_iter()
             .map(|item| match item {
                 StoredNxsItem::NxsSyncGrpItem(item) => {
+                    // validate flags, consistency!
                     if item.flag != NxsSyncGrpItemFlags::Request {
-                        warn!("gen_send_grps_transaction: item has wrong flags {:?}, expected 'NxsSyncGrpItemFlags::Request'", item.flag);
+                        warn!("send_groups_transaction: item has wrong flags {:?}, expected 'NxsSyncGrpItemFlags::Request'", item.flag);
                     }
                     item.grp_id
                 }
                 _ => panic!("transaction contains unexpected item type! {item:?}"),
             })
             .collect();
+
+        debug!("peer {} requested groups", peer_id);
+        trace!("{requested_group_ids:?}");
 
         let items: Vec<_> = self
             .shared
@@ -693,6 +717,15 @@ impl<const T: u16> NxsTransactionController<T> {
         trace!("{items:?}");
 
         if items.is_empty() {
+            debug!("no requested groups were locally found");
+
+            // Is this correct?
+            // from void RsGxsNetService::locked_genReqGrpTransaction(NxsTransaction* tr)
+            self.shared
+                .gxs_timestamps
+                .update_peer_group(peer_id, transaction.initial_packet.update_ts)
+                .await;
+
             return None;
         }
 
@@ -723,7 +756,7 @@ impl<const T: u16> NxsTransactionController<T> {
 
         // send item
         let payload = to_retroshare_wire(&initial_packet);
-        let header = ServiceHeader::new(T.into(), SUBTYPE_NXS_TRANSAC_ITEM, &payload);
+        let header = ServiceHeader::new(T.into(), SUBTYPE_NXS_TRANSACTION_ITEM, &payload);
         let packet = Packet::new(header.into(), payload, peer_id.to_owned());
 
         Some(packet)
@@ -750,55 +783,70 @@ impl<const T: u16> NxsTransactionController<T> {
     pub async fn request_groups(&self, grp_ids: Vec<GxsGroupId>) -> Vec<Packet> {
         trace!("requesting groups {grp_ids:?}");
 
-        let transaction_id = self.get_next_transaction_number().await;
-
-        // FIXME hardcoded for the moment
-        let peer_id: Arc<SslId> = Arc::new("d6fb6c0f53d18303dcc9043111490e40".into());
-
-        let items: Vec<_> = grp_ids
-            .into_iter()
-            .map(|grp| NxsSyncGrpItem {
-                base: NxsItem { transaction_id },
-
-                flag: NxsSyncGrpItemFlags::Request,
-                grp_id: grp.into(),
-
-                author_id: GxsId::default(),
-                publish_ts: 0,
-            })
-            .map(|grp| StoredNxsItem::NxsSyncGrpItem(grp))
+        // ask all online peers
+        let peers: Vec<_> = self
+            .shared
+            .core
+            .get_connected_peers()
+            .lock()
+            .await
+            .0
+            .keys()
+            .map(|peer| peer.to_owned())
             .collect();
 
-        // create new transaction
-        let initial_packet = NxsTransactionItem {
-            base: NxsItem { transaction_id },
-            transact_type: NxsTransactionItemType::TypeGrpListReq,
-            transact_flag: NxsTransactionItemFlags::FlagBegin,
-            items: items.len() as u32,
-            update_ts: 0, // FIXME
-            timestamp: 0,
-        };
-        let transaction_new = NxsTransaction::new_responding(
-            transaction_id,
-            peer_id.to_owned(), // FIXME
-            initial_packet.to_owned(),
-            items,
-        );
+        let mut packets = vec![];
+        for peer_id in peers {
+            let transaction_id = self.get_next_transaction_number().await;
 
-        // register transaction
-        self.transactions
-            .write()
-            .await
-            .entry(self.shared.own_id.to_owned())
-            .or_default()
-            .insert(transaction_id, transaction_new);
+            let items: Vec<_> = grp_ids
+                .to_owned()
+                .into_iter()
+                .map(|grp| NxsSyncGrpItem {
+                    base: NxsItem { transaction_id },
 
-        // send item
-        let payload = to_retroshare_wire(&initial_packet);
-        let header = ServiceHeader::new(T.into(), SUBTYPE_NXS_TRANSAC_ITEM, &payload);
-        let packet = Packet::new(header.into(), payload, peer_id.to_owned());
+                    flag: NxsSyncGrpItemFlags::Request,
+                    grp_id: grp.into(),
 
-        vec![packet]
+                    author_id: GxsId::default(),
+                    publish_ts: 0,
+                })
+                .map(|grp| StoredNxsItem::NxsSyncGrpItem(grp))
+                .collect();
+
+            // create new transaction
+            let initial_packet = NxsTransactionItem {
+                base: NxsItem { transaction_id },
+                transact_type: NxsTransactionItemType::TypeGrpListReq,
+                transact_flag: NxsTransactionItemFlags::FlagBegin,
+                items: items.len() as u32,
+                update_ts: 0, // FIXME
+                timestamp: 0,
+            };
+            let transaction_new = NxsTransaction::new_responding(
+                transaction_id,
+                peer_id.to_owned(), // FIXME
+                initial_packet.to_owned(),
+                items,
+            );
+
+            // register transaction
+            self.transactions
+                .write()
+                .await
+                .entry(self.shared.own_id.to_owned())
+                .or_default()
+                .insert(transaction_id, transaction_new);
+
+            // send item
+            let payload = to_retroshare_wire(&initial_packet);
+            let header = ServiceHeader::new(T.into(), SUBTYPE_NXS_TRANSACTION_ITEM, &payload);
+            let packet = Packet::new(header.into(), payload, peer_id.to_owned());
+
+            packets.push(packet);
+        }
+
+        packets
     }
 
     async fn sync_server_ts(&self) {

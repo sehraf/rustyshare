@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use log::{debug, info, trace, warn};
+use nanorand::{Rng, WyRand};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, RwLock},
@@ -11,9 +12,9 @@ use retroshare_compat::{basics::SslId, serde::from_retroshare_wire_result, servi
 
 use crate::{
     handle_packet,
+    low_level_parsing::{headers::ServiceHeader, Packet},
     // error,
     model::{intercom::Intercom, location::Location, DataCore},
-    low_level_parsing::{headers::ServiceHeader, Packet},
     services::{HandlePacketResult, Service},
     utils::{
         self,
@@ -64,7 +65,7 @@ const ENTRY_B_FN: StatsPrinter =
 pub struct Turtle {
     core: UnboundedSender<Intercom>,
 
-    // rng: Arc<RwLock<ThreadRng>>,
+    rng: Arc<RwLock<WyRand>>,
     locations: Vec<Arc<Location>>,
 
     tunnel_history: RwLock<HashMap<u32, TunnelRequest>>,
@@ -90,7 +91,7 @@ impl Turtle {
         Turtle {
             core: core_tx,
 
-            // rng: Arc::new(RwLock::new(thread_rng())),
+            rng: Arc::new(RwLock::new(WyRand::new())),
             locations: dc.get_locations().clone(),
 
             tunnel_history: RwLock::new(HashMap::new()),
@@ -333,13 +334,14 @@ impl Turtle {
         //
         // DO NOT CARE ABOUT THE (stupid) HOPS COUNTER
         // I know that RS took some effort to not leak anything but i personally believe that this (and basically everything else) introduces leakage to some extend.
+        //
+        // This does code however not respect any limits (e.g. tunnel requests per seconds, bandwidth, and so on .. TODO)
 
-        // self.rng
-        //     .write()
-        //     .expect("failed to get rng, lock poisoned!")
-        //     .gen_ratio(66, 100)
-
-        (rand::random::<u32>() as f32) < u32::MAX as f32 * 2. / 3.
+        self.rng
+            .write()
+            .expect("failed to get rng, lock poisoned!")
+            .generate_range(0..100)
+            > 66
     }
 }
 

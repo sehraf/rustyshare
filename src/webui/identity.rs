@@ -7,8 +7,8 @@ use actix_web::{
 };
 use retroshare_compat::{
     basics::{GxsId, GxsIdHex, PgpIdHex},
-    gxs::sqlite::database::{GroupFlags, GxsGroupMeta, SubscribeFlags},
-    webui::identity::IdentityDetails,
+    gxs::sqlite::types::{GroupFlags, SubscribeFlags},
+    webui::identity::{GxsGroupMeta, IdentityDetails},
 };
 use serde::Serialize;
 
@@ -30,7 +30,10 @@ pub async fn rs_identity_get_identities_summaries(
             .get_service_data()
             .gxs_id()
             .get_identities_summaries()
-            .await,
+            .await
+            .into_iter()
+            .map(|entry| entry.into())
+            .collect(),
     }))
 }
 
@@ -147,7 +150,7 @@ pub async fn rs_identity_get_id_details(
         reputation: (),
         avatar: vec![],
         publish_ts: details.publish_ts.into(),
-        last_usage_ts: details.last_seen.into(), // FIXME
+        last_usage_ts: details.last_post.into(), // FIXME
         use_cases: HashMap::new(),
     };
 

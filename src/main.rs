@@ -1,3 +1,22 @@
+#![warn(
+    clippy::await_holding_lock,
+    clippy::cargo_common_metadata,
+    clippy::dbg_macro,
+    clippy::empty_enum,
+    clippy::enum_glob_use,
+    clippy::inefficient_to_string,
+    clippy::mem_forget,
+    clippy::mutex_integer,
+    clippy::needless_continue,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::wildcard_imports,
+    future_incompatible,
+    // missing_docs,
+    missing_debug_implementations,
+    unreachable_pub
+)]
+
 use controller::CoreController;
 use flexi_logger::{Duplicate, FileSpec, LevelFilter, LogSpecification, WriteMode};
 use log::warn;
@@ -29,7 +48,6 @@ use ::retroshare_compat::keyring::Keyring;
 use io::Write;
 use openssl::x509::X509;
 use sequoia_openpgp as openpgp;
-use serial_stuff::load_peers;
 
 #[allow(unused_braces)]
 fn read_location_cert(path: &Path) -> Result<X509, io::Error> {
@@ -140,32 +158,36 @@ fn select_location(base_dir: &Path, keys: &Keyring) -> Option<(String, X509, ope
 async fn main() {
     let mut builder = LogSpecification::builder();
     builder
-        .module(
-            "retroshare_compat::gxs::sqlite::database",
-            LevelFilter::Trace,
-        )
+        // .module(
+        //     "retroshare_compat::gxs::sqlite::database",
+        //     LevelFilter::Trace,
+        // )
         // .module("rustyshare::controller::connected_peer", LevelFilter::Debug)
         // .module("rustyshare::controller", LevelFilter::Trace)
         // .module("rustyshare::gxs", LevelFilter::Trace)
         // .module("rustyshare::gxs::gxsid", LevelFilter::Debug)
-        .module("rustyshare::gxs::nxs_transactions", LevelFilter::Debug)
+        // .module("rustyshare::gxs::nxs_transactions", LevelFilter::Debug)
         // .module("rustyshare::services", LevelFilter::Trace)
         .module("rustyshare::services::heartbeat", LevelFilter::Warn)
         .module("rustyshare::services::bwctrl", LevelFilter::Warn)
         // .module("rustyshare::services::chat", LevelFilter::Debug)
-        .module("rustyshare::services::gxs_id", LevelFilter::Debug)
+        // .module("rustyshare::services::gxs_id", LevelFilter::Debug)
         // .module("rustyshare::services::turtle", LevelFilter::Trace)
         // .module("sequoia_openpgp", LevelFilter::Trace)
         // .module("actix", LevelFilter::Trace)
         .module("actix_web", LevelFilter::Trace)
         .default(LevelFilter::Info);
     flexi_logger::Logger::with(builder.finalize())
-        // .format(colored_detailed_format)
+        // use async output
+        .write_mode(WriteMode::Async)
+        // write to log file (overwrite old one)
         .log_to_file(FileSpec::default().suppress_timestamp())
+        // log log file name
         .print_message()
+        // use buffered writing
         .write_mode(WriteMode::BufferAndFlush)
+        // also print to stderr
         .duplicate_to_stderr(Duplicate::All)
-        // .log_to_stderr()
         .start()
         .expect("failed to start logger");
 
@@ -225,7 +247,7 @@ async fn main() {
     .expect("failed to load peers.cfg");
 
     // ... and peer infos
-    let friends = load_peers(&mut peers_cfg, &keys);
+    let friends = serial_stuff::load_peers(&mut peers_cfg, &keys);
 
     // build own id
     let hex = hex::decode(&loc.0[6..]).expect("Decoding failed");

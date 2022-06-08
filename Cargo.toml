@@ -20,13 +20,13 @@ openssl = "0.10"
 byteorder = "1.4"
 base64 = "0.13"
 hex = { version = "0.4", features = ["serde"] }
-rand = "0.8"
+nanorand = "0.7"
 
 # logging
 log = "0.4"
 # pretty_env_logger = "0.4"
 # env_logger = "0.9"
-flexi_logger = { version = "0.22", features = ["use_chrono_for_offset"] }
+flexi_logger = { version = "0.22", features = ["use_chrono_for_offset", "async"] }
 
 # Tokio debugging
 # console-subscriber = "0.1"

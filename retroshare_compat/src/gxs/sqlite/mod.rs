@@ -1,12 +1,13 @@
 use rusqlite::Result;
 
 pub mod database;
+pub mod types;
 
 pub trait FromSqlRs
 where
     Self: Sized,
 {
-    fn get_columns() -> Vec<String>;
+    fn get_columns() -> Vec<(String, String)>;
     fn from_row(row: &rusqlite::Row) -> Result<Self>;
     fn to_row(&self) -> Vec<&dyn rusqlite::ToSql>;
 }
@@ -17,30 +18,34 @@ macro_rules! gen_db_type {
         $([$var_name:ident: $var_type:tt $(< $lt3:ident >)?, $db_field:expr]),+
         ,
     ) => {
-        // do not generate serde code!
+        // do not generate serde code! These aren't straight forward serializable
         #[derive(Debug, Default, Clone)]
         pub struct $struct_name$(<$const $lt2: $clt>)? {
             $(pub $var_name: $var_type $(< $lt3 >)?),+
         }
 
         impl crate::gxs::sqlite::FromSqlRs for $struct_name {
-            fn get_columns() -> Vec<String> {
+            fn get_columns() -> Vec<(String, String)> {
+                let mut index = 0; // start with 0 and add 1 first
                 // create fields
                 vec![
                     $(
-                        $db_field
+                        ($db_field, {
+                            index += 1;
+                            String::from("?") + &index.to_string()
+                        })
                     ),+
                 ].into_iter()
                 // remove empty ones
-                .filter(|s| !s.is_empty())
+                .filter(|(s, _)| !s.is_empty())
                 // convert to string
-                .map(|s| s.to_string())
+                .map(|(s, t)| (s.to_string(), t))
                 .collect()
             }
 
             // we end with index += 1, which rustc warns about
             #[allow(unused_assignments)]
-            fn from_row(row: &rusqlite::Row) -> Result<Self> {
+            fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
                 // load fields from from
                 let mut index = 0;
                 $(
@@ -64,7 +69,7 @@ macro_rules! gen_db_type {
             fn to_row(&self) -> Vec<& dyn rusqlite::ToSql>{
                 let mut row = vec![];
                 $(
-                    if $db_field.is_empty() {
+                    if !$db_field.is_empty() {
                         row.push(&self.$var_name as &dyn rusqlite::ToSql);
                     }
                 )+

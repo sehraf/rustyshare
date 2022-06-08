@@ -4,7 +4,10 @@ use log::{info, warn};
 use retroshare_compat::{
     basics::{GxsGroupId, GxsId},
     gxs::{
-        sqlite::database::{GxsDatabase, GxsGroupMeta, GxsGrpDataSql, GxsGrpMetaSql},
+        sqlite::{
+            database::GxsDatabase,
+            types::{GxsGroup, GxsGrpDataSql, GxsGrpMetaSql},
+        },
         GxsDatabaseBackend, NxsGrp, NxsItem,
     },
     serde::from_retroshare_wire,
@@ -36,12 +39,14 @@ pub struct GxsIdStore {
 
 impl GxsIdStore {
     pub fn new(database: GxsDatabaseBackend) -> Self {
-        let gxs_ids = database
-            .get_grp_meta(&vec![])
-            .into_iter()
+        let meta = database.get_grp_meta(&vec![]);
+
+        // old code
+        let gxs_ids = meta
+            .iter()
             .map(|entry| {
                 let id: GxsId = entry.group_id.into();
-                let key = entry.keys;
+                let key = entry.keys.to_owned();
                 (id, (key.public_keys, key.private_keys))
             })
             .map(|(id, (pub_keys, priv_keys))| {
@@ -77,7 +82,29 @@ impl GxsIdStore {
         let mem_cache = GxsDatabaseBackend::new(
             retroshare_compat::gxs::GxsType::Id,
             GxsDatabase::new_mem("").unwrap(),
+            // GxsDatabase::new_file("/tmp/foo.db".into(), "").unwrap(),
         );
+
+        // load private keys into mem cache
+        for mut entry in meta {
+            if entry
+                .keys
+                .private_keys
+                .iter()
+                .find(|key| key.key_flags.contains(TlvKeyFlags::TYPE_FULL))
+                .is_some()
+            {
+                // found private key
+
+                // load blobs
+                let blobs = database.get_grp_data(&vec![entry.group_id]);
+                let blob = blobs.into_iter().nth(0).unwrap();
+
+                entry.set_blobs(blob);
+
+                mem_cache.store_group(&entry);
+            }
+        }
 
         Self {
             database: Mutex::new(database),
@@ -90,7 +117,7 @@ impl GxsIdStore {
         }
     }
 
-    pub async fn get_identities_summaries(&self) -> Vec<GxsGroupMeta> {
+    pub async fn get_identities_summaries(&self) -> Vec<GxsGrpMetaSql> {
         self.database
             .lock()
             .await
@@ -306,18 +333,24 @@ impl GxsIdStore {
             let data = GxsGrpDataSql {
                 group_id: id,
                 meta_data: (*group.meta).to_owned(),
+                nxs_data_len: group.grp.len(),
                 nxs_data: (*group.grp).to_owned(),
             };
+
+            // FIXME reading this code hurts my brain, this needs a rewrite
+            let mut group: GxsGroup = meta.into();
+            group.set_blobs(data);
+
             info!("receive_grp: adding new gxs groups {id}");
-            lock.store_group(&meta, &data);
+            lock.store_group(&group);
             self.received_groups.lock().await.push(id);
         } else {
             warn!("receive_grp: gxs group {id} already exists");
         }
     }
 
-    pub async fn add_group(&self, meta: &GxsGrpMetaSql, data: &GxsGrpDataSql) {
-        let id = meta.group_id;
+    pub async fn add_group(&self, group: &GxsGroup) {
+        let id = group.group_id;
         // if self.mem_cache.read().await.contains_key(&id) {
         //     warn!("add_group: gxs group {id} already exists");
         // } else {
@@ -329,7 +362,9 @@ impl GxsIdStore {
         let grp = lock.get_grp_meta(&vec![id]);
         if grp.is_empty() {
             info!("add_group: adding new gxs groups {id}");
-            lock.store_group(&meta, &data);
+            // let mut group: GxsGroup = meta.to_owned().into();
+            // group.set_blobs(data.to_owned());
+            lock.store_group(&group);
             self.received_groups.lock().await.push(id);
         } else {
             warn!("add_group: gxs group {id} already exists");

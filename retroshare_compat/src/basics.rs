@@ -51,6 +51,13 @@ macro_rules! gen_generic_id_type {
         #[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize, PartialOrd, Ord)]
         pub struct $name(pub [u8; $width]);
 
+        impl $name {
+            pub fn is_default(&self) -> bool {
+                self == &Self::default()
+            }
+        }
+
+
         impl Default for $name {
             fn default() -> Self {
                 Self([0u8; $width])

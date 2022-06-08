@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    basics::{GxsIdHex, PgpIdHex},
-    gxs::sqlite::database::GroupFlags,
+    basics::{GxsIdHex, PgpIdHex, PeerIdHex, GxsCircleIdHex, GxsGroupIdHex},
+    gxs::sqlite::types::{GroupFlags, GxsGrpMetaSql, GroupStatus, SubscribeFlags, AuthenFlags, GxsCircleType, SignFlags},
 };
 
 use super::{chat::GxsImage, XInt64};
@@ -81,4 +81,122 @@ pub struct IdentityDetails {
     pub last_usage_ts: XInt64<i64>,
     #[serde(rename(serialize = "mUseCases", deserialize = "mUseCases"))]
     pub use_cases: HashMap<IdentityUsage, XInt64<i64>>,
+}
+
+// RsGroupMetaData
+// struct RsGroupMetaData : RsSerializable
+// {
+// 	   // (csoler) The correct default value to be used in mCircleType is GXS_CIRCLE_TYPE_PUBLIC, which is defined in rsgxscircles.h,
+//     // but because of a loop in the includes, I cannot include it here. So I replaced with its current value 0x0001.
+
+// 	RsGroupMetaData() : mGroupFlags(0), mSignFlags(0), mPublishTs(0),
+// 	    mCircleType(0x0001), mAuthenFlags(0), mSubscribeFlags(0), mPop(0),
+// 	    mVisibleMsgCount(0), mLastPost(0), mGroupStatus(0) {}
+
+// 	virtual ~RsGroupMetaData() = default;
+
+//     void operator =(const RsGxsGrpMetaData& rGxsMeta);
+//     RsGroupMetaData(const RsGxsGrpMetaData& rGxsMeta) { operator=(rGxsMeta); }
+
+//     RsGxsGroupId mGroupId;
+//     std::string mGroupName;
+// 	   uint32_t    mGroupFlags;  // Combination of FLAG_PRIVACY_PRIVATE | FLAG_PRIVACY_RESTRICTED | FLAG_PRIVACY_PUBLIC: diffusion
+//     uint32_t    mSignFlags;   // Combination of RSGXS_GROUP_SIGN_PUBLISH_MASK & RSGXS_GROUP_SIGN_AUTHOR_MASK, i.e. what signatures are required for parent and child msgs
+
+//     rstime_t      mPublishTs; // Mandatory.
+//     RsGxsId    mAuthorId;   // Author of the group. Left to "000....0" if anonymous
+
+//     // for circles
+//     RsGxsCircleId mCircleId;	// Id of the circle to which the group is restricted
+//     uint32_t mCircleType;		// combination of CIRCLE_TYPE_{ PUBLIC,EXTERNAL,YOUR_FRIENDS_ONLY,LOCAL,EXT_SELF,YOUR_EYES_ONLY }
+
+//     // other stuff.
+//     uint32_t mAuthenFlags;		// Actually not used yet.
+//     RsGxsGroupId mParentGrpId;
+
+//     // BELOW HERE IS LOCAL DATA, THAT IS NOT FROM MSG.
+
+//     uint32_t    mSubscribeFlags;
+
+//     uint32_t    mPop; 			   // Popularity = number of friend subscribers
+//     uint32_t    mVisibleMsgCount;  // Max messages reported by friends
+//     rstime_t    mLastPost; 		   // Timestamp for last message. Not used yet.
+//     rstime_t    mLastSeen; 		   // Last time the group was advertised by friends.
+
+//     uint32_t    mGroupStatus;
+
+// 	   /// Service Specific Free-Form local (non-synced) extra storage.
+// 	   std::string mServiceString;
+//     RsPeerId mOriginator;
+//     RsGxsCircleId mInternalCircle;
+// };
+#[allow(unused)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GxsGroupMeta {
+    #[serde(rename(serialize = "mGroupId", deserialize = "mGroupId"))]
+    pub group_id: GxsGroupIdHex,
+    #[serde(rename(serialize = "mGroupName", deserialize = "mGroupName"))]
+    pub group_name: String,
+    #[serde(rename(serialize = "mGroupFlags", deserialize = "mGroupFlags"))]
+    pub group_flags: GroupFlags,
+    #[serde(rename(serialize = "mSignFlags", deserialize = "mSignFlags"))]
+    pub sign_flags: SignFlags,
+    #[serde(rename(serialize = "mPublishTs", deserialize = "mPublishTs"))]
+    pub publish_ts: XInt64<i64>, // BUG rs uses u32 here but it is a timestamp
+    #[serde(rename(serialize = "mAuthorId", deserialize = "mAuthorId"))]
+    pub author_id: GxsIdHex,
+    #[serde(rename(serialize = "mCircleId", deserialize = "mCircleId"))]
+    pub circle_id: GxsCircleIdHex,
+    #[serde(rename(serialize = "mCircleType", deserialize = "mCircleType"))]
+    pub circle_type: GxsCircleType,
+    #[serde(rename(serialize = "mAuthenFlags", deserialize = "mAuthenFlags"))]
+    pub authen_flags: AuthenFlags,
+    #[serde(rename(serialize = "mParentGrpId", deserialize = "mParentGrpId"))]
+    pub parent_grp_id: GxsGroupIdHex,
+    #[serde(rename(serialize = "mSubscribeFlags", deserialize = "mSubscribeFlags"))]
+    pub subscribe_flags: SubscribeFlags,
+    #[serde(rename(serialize = "mPop", deserialize = "mPop"))]
+    pub pop: u32,
+    #[serde(rename(serialize = "mVisibleMsgCount", deserialize = "mVisibleMsgCount"))]
+    pub visible_msg_count: u32,
+    #[serde(rename(serialize = "mLastPost", deserialize = "mLastPost"))]
+    pub last_post: XInt64<i64>,
+    #[serde(skip)]
+    #[serde(rename(serialize = "mLastSeen", deserialize = "mLastSeen"))]
+    pub last_seen: i64,
+    #[serde(rename(serialize = "mGroupStatus", deserialize = "mGroupStatus"))]
+    pub group_status: GroupStatus,
+    #[serde(rename(serialize = "mServiceString", deserialize = "mServiceString"))]
+    pub service_string: String,
+    #[serde(rename(serialize = "mOriginator", deserialize = "mOriginator"))]
+    pub originator: PeerIdHex,
+    #[serde(rename(serialize = "mInternalCircle", deserialize = "mInternalCircle"))]
+    pub internal_circle: GxsCircleIdHex,
+}
+
+impl From<GxsGrpMetaSql> for GxsGroupMeta {
+    fn from(x: GxsGrpMetaSql) -> Self {
+        GxsGroupMeta {
+            group_id: x.group_id.into(),
+            group_name: x.group_name,
+            group_flags: x.group_flags,
+            sign_flags: x.sign_flags,
+            publish_ts: x.publish_ts.into(),
+            author_id: x.author_id.into(),
+            circle_id: x.circle_id.into(),
+            circle_type: x.circle_type,
+            authen_flags: x.authen_flags,
+            parent_grp_id: x.parent_grp_id.into(),
+            subscribe_flags: x.subscribe_flags,
+            pop: x.pop,
+            visible_msg_count: x.visible_msg_count,
+            last_post: x.last_post.into(),
+            last_seen: 0,
+            group_status: x.group_status,
+            service_string: x.service_string,
+            originator: x.originator.into(),
+            internal_circle: x.internal_circle.into(),
+            // ..Default::default()
+        }
+    }
 }
