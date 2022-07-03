@@ -14,12 +14,21 @@ use retroshare_compat::{
 };
 use tokio::sync::{mpsc::UnboundedSender, RwLock};
 
-use crate::services::chat::CHAT_MAX_KEEP_MSG_RECORD;
+// use crate::services::chat::CHAT_MAX_KEEP_MSG_RECORD;
+
+/*
+#############################
+TODO refactor this code to:
+ - work async
+ - move lobby into chat module
+#############################
+*/
 
 #[derive(Debug)]
 pub struct ChatStore {
     pub lobbies: RwLock<HashMap<ChatLobbyId, Lobby>>,
     pub cmd: RwLock<Option<UnboundedSender<ChatCmd>>>,
+    // shared: Mutex<Vec<AppRequest<ChatLobbyId, Lobby>>>, // TODO
 }
 
 impl ChatStore {
@@ -27,6 +36,7 @@ impl ChatStore {
         Self {
             lobbies: RwLock::new(HashMap::new()),
             cmd: RwLock::new(None),
+            // shared: Mutex::new(vec![]),
         }
     }
 }
@@ -68,9 +78,9 @@ impl Lobby {
         self.participating_friends
             .retain(|_, time| SystemTime::now().duration_since(*time).unwrap() < CLEAR_TIME);
 
-        let now = SystemTime::now();
-        self.msg_cache
-            .retain(|_id, ts| ts.checked_add(CHAT_MAX_KEEP_MSG_RECORD).unwrap() < now);
+        // let now = SystemTime::now();
+        // self.msg_cache // FIXME
+        //     .retain(|_id, ts| ts.checked_add(CHAT_MAX_KEEP_MSG_RECORD).unwrap() < now);
     }
 
     pub fn update_max_peers(&mut self, count: u32) {

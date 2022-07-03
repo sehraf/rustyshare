@@ -9,21 +9,29 @@ use async_trait::async_trait;
 use log::{debug, info, trace, warn};
 use nanorand::Rng;
 use retroshare_compat::{
-    basics::GxsId,
+    basics::{GxsId, PeerId},
     events::EventType,
     serde::{from_retroshare_wire, to_retroshare_wire, Toggleable},
-    services::chat::{
-        ChatIdType, ChatLobbyBouncingObject, ChatLobbyConnectChallengeItem, ChatLobbyEvent,
-        ChatLobbyEventItem, ChatLobbyFlags, ChatLobbyId, ChatLobbyInviteItem, ChatLobbyListItem,
-        ChatLobbyMsgItem, ChatMsgItem,
+    services::{
+        chat::{
+            ChatIdType, ChatLobbyBouncingObject, ChatLobbyConnectChallengeItem, ChatLobbyEvent,
+            ChatLobbyEventItem, ChatLobbyFlags, ChatLobbyId, ChatLobbyInviteItem,
+            ChatLobbyListItem, ChatLobbyMsgItem, ChatMsgItem,
+        },
+        service_info::RsServiceInfo,
     },
     tlv::tlv_keys::{KeyId, TlvKeyFlags, TlvKeySignature, TlvKeySignatureInner},
 };
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use serde::Serialize;
+use tokio::{
+    select,
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
+    time::{interval, Interval},
+};
 
 use crate::{
     gxs::gxsid::{generate_signature, verify_signature},
-    handle_packet,
     low_level_parsing::{
         headers::{Header, ServiceHeader},
         Packet,
@@ -33,8 +41,7 @@ use crate::{
         services::chat::{ChatCmd, Lobby},
         DataCore,
     },
-    services::{HandlePacketResult, Service},
-    utils::{simple_stats::StatsCollection, Timer, Timers},
+    services::Service,
 };
 
 use ::retroshare_compat::services::ServiceType;
@@ -80,15 +87,6 @@ const CHAT_SUB_TYPE_CHAT_LOBBY_INVITE: u8 = 0x1B;
 const CHAT_SUB_TYPE_OUTGOING_MAP: u8 = 0x1C;
 const CHAT_SUB_TYPE_SUBSCRIBED_CHAT_LOBBY_CONFIG: u8 = 0x1D;
 
-const LOBBY_REQUEST_INTERVAL: (&str, Duration, Duration) = (
-    "requesting lobbies",
-    Duration::from_secs(120),
-    Duration::from_secs(5),
-);
-const LOBBY_MAINTENANCE_INTERVAL: (&str, Duration) =
-    ("maintaining lobbies", Duration::from_secs(30));
-const LOBBY_KEEP_ALIVE_INTERVAL: (&str, Duration) = ("keep alive", Duration::from_secs(120));
-
 pub const CHAT_MAX_KEEP_MSG_RECORD: Duration = Duration::from_secs(1200); // 20 minutes
 const CONNECTION_CHALLENGE_MAX_MSG_AGE: Duration = Duration::from_secs(30); // maximum age of a message to be used in a connection challenge
 
@@ -107,9 +105,9 @@ macro_rules! verify_item {
             .verify_message(&key_id, &data_signed, &$item.bounce_obj.signature.sign_data)
             .await
         {
-            debug!("[Chat] {} verification failed!", stringify!($item));
+            debug!("{} verification failed!", stringify!($item));
             debug!(" -> {:?}", $item);
-            return handle_packet!();
+            return;
         } else {
             trace!("verified {} successful", stringify!($item));
         }
@@ -153,6 +151,8 @@ macro_rules! sign_item {
 // ChatLobbyFlags lobby_flags ;				// see RS_CHAT_LOBBY_PRIVACY_LEVEL_PUBLIC / RS_CHAT_LOBBY_PRIVACY_LEVEL_PRIVATE
 
 pub struct Chat {
+    rx: UnboundedReceiver<Intercom>,
+
     core: Arc<DataCore>,
     core_tx: UnboundedSender<Intercom>,
 
@@ -162,6 +162,10 @@ pub struct Chat {
 
     // TODO this id is used for auto joining
     own_gxs_id: Arc<GxsId>,
+
+    timer_lobby_request: Interval,
+    timer_lobby_maintenance: Interval,
+    timer_lobby_keep_alive: Interval,
 }
 
 /*
@@ -171,37 +175,26 @@ TODOs:
 
 impl Chat {
     pub async fn new(
-        dc: &Arc<DataCore>,
+        core: &Arc<DataCore>,
         core_tx: UnboundedSender<Intercom>,
-        timers: &mut Timers,
+        rx: UnboundedReceiver<Intercom>,
     ) -> Chat {
-        let data = dc.get_service_data().chat();
+        let data = core.get_service_data().chat();
 
-        timers.insert(
-            LOBBY_REQUEST_INTERVAL.0.into(),
-            Timer::new_soon(LOBBY_REQUEST_INTERVAL.1, LOBBY_REQUEST_INTERVAL.2),
-        );
-        timers.insert(
-            LOBBY_MAINTENANCE_INTERVAL.0.into(),
-            Timer::new(LOBBY_MAINTENANCE_INTERVAL.1),
-        );
-        timers.insert(
-            LOBBY_KEEP_ALIVE_INTERVAL.0.into(),
-            Timer::new(LOBBY_KEEP_ALIVE_INTERVAL.1),
-        );
-
-        let (tx, rx) = unbounded_channel();
-        *data.cmd.write().await = Some(tx);
+        let (tx_chat, rx_chat) = unbounded_channel();
+        *data.cmd.write().await = Some(tx_chat);
 
         // TODO FIXME
         // let own_gxs_id = dc.get_identities_summaries().await.iter().find(|&entry| entry.)
         let own_gxs_id = Arc::new("c59df722f56f2f886ac301acc5572e03".into());
 
         Chat {
-            core: dc.clone(),
+            rx,
+
+            core: core.clone(),
             core_tx,
 
-            cmd_rx: rx,
+            cmd_rx: rx_chat,
 
             // TODO FIXME
             // { id: 4347301314802127616, name: StringTagged("test") }
@@ -214,14 +207,27 @@ impl Chat {
             ]
             .into(),
             own_gxs_id,
+
+            timer_lobby_request: interval(Duration::from_secs(120)),
+            timer_lobby_maintenance: interval(Duration::from_secs(30)),
+            timer_lobby_keep_alive: interval(Duration::from_secs(120)),
         }
     }
 
-    async fn handle_incoming(
-        &self,
-        header: &ServiceHeader,
-        mut packet: Packet,
-    ) -> HandlePacketResult {
+    fn send_packet<T>(&self, sub_type: u8, item: &T, receiving_peer: Arc<PeerId>)
+    where
+        T: Serialize,
+    {
+        let payload = to_retroshare_wire(item);
+        let header = ServiceHeader::new(ServiceType::Chat, sub_type, &payload);
+        let packet = Packet::new(header.into(), payload, receiving_peer);
+
+        self.core_tx
+            .send(Intercom::Send(packet))
+            .expect("failed to send to core");
+    }
+
+    async fn handle_incoming(&self, header: &ServiceHeader, mut packet: Packet) {
         trace!("[Chat] {header:?}");
 
         // just a read on a RwLock
@@ -302,7 +308,10 @@ impl Chat {
                                 .or_insert(SystemTime::now()) = SystemTime::now();
 
                             let packet = self.build_lobby_invite(lobby);
-                            return handle_packet!(packet);
+                            self.core_tx
+                                .send(Intercom::Send(packet))
+                                .expect("failed to send to core");
+                            break;
                         }
                     }
                 }
@@ -320,11 +329,16 @@ impl Chat {
                     .collect();
                 let list = ChatLobbyListItem { lobbies };
 
-                let payload = to_retroshare_wire(&list);
-                let header =
-                    ServiceHeader::new(self.get_id(), CHAT_SUB_TYPE_CHAT_LOBBY_LIST, &payload)
-                        .into();
-                return handle_packet!(Packet::new(header, payload, packet.peer_id.to_owned()));
+                // let payload = to_retroshare_wire(&list);
+                // let header =
+                //     ServiceHeader::new(self.get_id(), CHAT_SUB_TYPE_CHAT_LOBBY_LIST, &payload)
+                //         .into();
+                // return handle_packet!(Packet::new(header, payload, packet.peer_id.to_owned()));
+                self.send_packet(
+                    CHAT_SUB_TYPE_CHAT_LOBBY_LIST,
+                    &list,
+                    packet.peer_id.to_owned(),
+                )
             }
             CHAT_SUB_TYPE_CHAT_LOBBY_LIST => {
                 let list: ChatLobbyListItem = from_retroshare_wire(&mut packet.payload);
@@ -341,17 +355,66 @@ impl Chat {
                     entry.update_max_peers(lobby.count);
                 }
 
+                // for auto_join in &self.auto_join {
+                //     if let Some(lobby) = lock.get_mut(auto_join) {
+                //         if !lobby.joined {
+                //             // FIXME, we are holding the lock for the whole duration of the call
+                //             // this also triggers a keep alive
+                //             self.join_lobby(lobby, self.own_gxs_id.to_owned()).await;
+                //         }
+                //     }
+                // }
+
                 // check for joinable lobbies
-                // TODO
-                for auto_join in &self.auto_join {
-                    if let Some(lobby) = lock.get_mut(auto_join) {
-                        if lobby.joined {
-                            continue;
+                let join_id: Vec<_> = self
+                    .auto_join
+                    .iter()
+                    .filter_map(|auto_join| {
+                        if let Some(lobby) = lock.get_mut(auto_join) {
+                            if lobby.joined {
+                                None
+                            } else {
+                                Some(lobby.lobby_id)
+                            }
+                        } else {
+                            None
                         }
-                        // this also triggers a keep alive
-                        self.join_lobby(lobby, self.own_gxs_id.to_owned()).await;
-                    }
+                    })
+                    .collect();
+                drop(lock);
+
+                for lobby_id in join_id {
+                    self.join_lobby(lobby_id, self.own_gxs_id.to_owned()).await;
                 }
+
+                // for lobby_id in joined_id {
+                //     let lobby = {
+                //         match data.lobbies.read().await.get(&lobby_id) {
+                //             Some(l) => l.to_owned(),
+                //             None => continue,
+                //         }
+                //     };
+
+                //     let packet = self.build_lobby_invite(&lobby);
+
+                //     for (peer, _) in &lobby.participating_friends {
+                //         let mut p = packet.to_owned();
+                //         p.peer_id = peer.to_owned();
+                //         self.core_tx
+                //             .send(Intercom::Send(p))
+                //             .expect("failed to send");
+                //     }
+
+                //     // send join event
+                //     for packet in self
+                //         .send_lobby_event(&lobby, ChatLobbyEvent::PeerJoined, None)
+                //         .await
+                //     {
+                //         self.core_tx
+                //             .send(Intercom::Send(packet))
+                //             .expect("failed to send");
+                //     }
+                // }
             }
             CHAT_SUB_TYPE_CHAT_LOBBY_SIGNED_EVENT => {
                 trace!("[Chat] signed event");
@@ -360,7 +423,7 @@ impl Chat {
                 let event: ChatLobbyEventItem = from_retroshare_wire(&mut packet.payload);
                 trace!("{event:?}");
 
-                return self.handle_chat_event(event, packet).await;
+                self.handle_chat_lobby_event(event, packet).await;
             }
             CHAT_SUB_TYPE_CHAT_LOBBY_SIGNED_MSG => {
                 trace!("[Chat] signed msg");
@@ -368,38 +431,36 @@ impl Chat {
                 let msg: ChatLobbyMsgItem = from_retroshare_wire(&mut packet.payload.to_owned());
                 trace!("{msg:?}");
 
-                return self.handle_chat_msg(msg, packet).await;
+                self.handle_chat_lobby_msg(msg, packet).await;
             }
 
             sub_type => {
                 warn!("[Chat] received unknown sub typ {sub_type}");
             }
         }
-
-        handle_packet!()
     }
 
-    async fn handle_chat_event(
-        &self,
-        event: ChatLobbyEventItem,
-        packet: Packet,
-    ) -> HandlePacketResult {
+    async fn handle_chat_lobby_event(&self, event: ChatLobbyEventItem, packet: Packet) {
         let data = self.core.get_service_data().chat();
 
         // filter
         if !self.filter_event(&event).await {
-            return handle_packet!();
+            return;
         }
         // verify
         verify_item!(self, event, packet);
 
         let mut lock = data.lobbies.write().await;
-        if let Some(lobby) = lock.get_mut(&event.bounce_obj.publobby_id) {
+        if let Some(lobby) = lock.get_mut(&event.bounce_obj.public_lobby_id) {
             // this quite noisy
-            debug!(
-                "[Chat] event {:?} in {}",
-                event.event_type, lobby.lobby_name
-            );
+            if log::log_enabled!(log::Level::Debug) {
+                debug!("event {:?} in {}", event.event_type, lobby.lobby_name);
+            } else {
+                match event.event_type {
+                    ChatLobbyEvent::KeepAlive => {}
+                    ref event @ _ => info!("event {event:?} in {}", lobby.lobby_name),
+                }
+            }
 
             // bounce!
             for (participant, _) in &lobby.participating_friends {
@@ -452,22 +513,20 @@ impl Chat {
             // TODO fire event to the rest of the code
             // self.core.webui_send(Event)
         }
-
-        handle_packet!()
     }
 
-    async fn handle_chat_msg(&self, msg: ChatLobbyMsgItem, packet: Packet) -> HandlePacketResult {
+    async fn handle_chat_lobby_msg(&self, msg: ChatLobbyMsgItem, packet: Packet) {
         let data = self.core.get_service_data().chat();
 
         // filter
         if !self.filter_message(&msg).await {
-            return handle_packet!();
+            return;
         }
         // verify
         verify_item!(self, msg, packet);
 
         let lock = data.lobbies.read().await;
-        if let Some(lobby) = lock.get(&msg.bounce_obj.publobby_id) {
+        if let Some(lobby) = lock.get(&msg.bounce_obj.public_lobby_id) {
             info!("received message in {}:", lobby.lobby_name);
             info!(" -> [{}] {}", msg.bounce_obj.nick, msg.msg_obj.message);
 
@@ -490,12 +549,11 @@ impl Chat {
         self.core_tx
             .send(Intercom::Event(EventType::ChatMessage { msg: msg.into() }))
             .expect("failed to send to core");
-
-        handle_packet!()
     }
 
-    fn request_lobbies(&self) -> Vec<Packet> {
+    fn request_lobbies(&self) {
         let payload = vec![];
+
         let header = ServiceHeader::new(
             self.get_id(),
             CHAT_SUB_TYPE_CHAT_LOBBY_LIST_REQUEST,
@@ -504,7 +562,9 @@ impl Chat {
         .into();
         let packet = Packet::new_without_location(header, payload);
 
-        vec![packet]
+        self.core_tx
+            .send(Intercom::Send(packet))
+            .expect("failed to send to core");
     }
 
     async fn build_bouncing_obj(
@@ -513,33 +573,19 @@ impl Chat {
         key_id: &KeyId,
     ) -> ChatLobbyBouncingObject {
         let msg_id = nanorand::WyRand::new().generate();
-        let details = {
-            // let meta = self
-            //     .core
-            //     .get_service_data()
-            //     .gxs_id()
-            //     .get_identities_summaries()
-            //     .await;
-            // meta.iter()
-            //     .find(|entry| entry.group_id.to_string() == key_id.to_string())
-            //     .unwrap()
-            //     .to_owned()
+        let nick = {
             self.core
                 .get_service_data()
                 .gxs_id()
-                .database
-                .lock()
+                .get_group_meta(&key_id.to_owned().into())
                 .await
-                .get_grp_meta(&vec![key_id.to_string().into()])
-                .into_iter()
-                .nth(0)
-                .unwrap()
+                .map_or(String::new(), |details| details.group_name)
         };
 
         ChatLobbyBouncingObject {
-            publobby_id: lobby_id,
+            public_lobby_id: lobby_id,
             msg_id,
-            nick: details.group_name.to_owned().into(),
+            nick: nick.into(),
             signature: Toggleable::new(TlvKeySignature::new(TlvKeySignatureInner::new(
                 key_id.to_owned(),
             ))),
@@ -595,7 +641,7 @@ impl Chat {
             .collect()
     }
 
-    async fn keep_alive(&self, lobby: Option<&Lobby>) -> Vec<Packet> {
+    async fn keep_alive(&self, lobby: Option<&Lobby>) {
         let data = self.core.get_service_data().chat();
         let lock = data.lobbies.read().await;
 
@@ -619,7 +665,11 @@ impl Chat {
                     .await,
             );
         }
-        packets
+        for packet in packets {
+            self.core_tx
+                .send(Intercom::Send(packet))
+                .expect("failed to send to core");
+        }
     }
 
     fn build_lobby_invite(&self, lobby: &Lobby) -> Packet {
@@ -629,9 +679,22 @@ impl Chat {
         Packet::new_without_location(header.into(), payload)
     }
 
-    async fn join_lobby(&self, lobby: &mut Lobby, gxs_id: Arc<GxsId>) {
+    async fn join_lobby(&self, lobby: ChatLobbyId, gxs_id: Arc<GxsId>) {
+        // get lobby
+        let mut lock = self.core.get_service_data().chat().lobbies.write().await;
+        let mut lobby = {
+            match lock.get_mut(&lobby) {
+                Some(lobby) => lobby,
+                None => {
+                    warn!("called join_lobby with unknown lobby id, this is likely a bug!");
+                    return;
+                }
+            }
+        };
+
         info!("joining lobby {}", lobby.lobby_name);
 
+        // update lobby
         lobby.joined = true;
         lobby.gxs_id = Some(*gxs_id);
         *lobby
@@ -639,7 +702,11 @@ impl Chat {
             .entry(gxs_id)
             .or_insert(SystemTime::now()) = SystemTime::now();
 
-        let packet = self.build_lobby_invite(lobby);
+        // drop lock and keep a local copy of the lobby
+        let lobby = lobby.to_owned();
+        drop(lock);
+
+        let packet = self.build_lobby_invite(&lobby);
 
         for (peer, _) in &lobby.participating_friends {
             let mut p = packet.to_owned();
@@ -651,7 +718,7 @@ impl Chat {
 
         // send join event
         for packet in self
-            .send_lobby_event(lobby, ChatLobbyEvent::PeerJoined, None)
+            .send_lobby_event(&lobby, ChatLobbyEvent::PeerJoined, None)
             .await
         {
             self.core_tx
@@ -720,47 +787,56 @@ impl Chat {
         }
     }
 
-    async fn handle_cmds(&mut self) {
+    async fn handle_cmd(&self, msg: ChatCmd) {
         let data = self.core.get_service_data().chat();
 
-        while let Ok(msg) = self.cmd_rx.try_recv() {
-            match msg {
-                ChatCmd::JoinLobby(lobby, gxs_id) => {
-                    info!("Joining lobby {lobby:?}");
+        match msg {
+            ChatCmd::JoinLobby(lobby, gxs_id) => {
+                info!("Joining lobby {lobby:?}");
 
-                    let gxs_id = Arc::new(gxs_id);
+                let gxs_id = Arc::new(gxs_id);
 
-                    let mut lock = data.lobbies.write().await;
-                    if let Some(lobby) = lock.get_mut(&lobby) {
-                        self.join_lobby(lobby, gxs_id).await;
-                    }
+                // let mut lock = data.lobbies.write().await;
+                // if let Some(lobby) = lock.get_mut(&lobby) {
+                //     self.join_lobby(lobby, gxs_id);
+                // }
+                if !data.lobbies.read().await.contains_key(&lobby) {
+                    warn!("cannot join lobby {lobby}, it is unknown");
+                    return;
                 }
-                ChatCmd::LeaveLobby(lobby) => {
-                    info!("leaving lobby {lobby:?}");
+                // lobby exists and lock is dropped
+                self.join_lobby(lobby, gxs_id).await;
+            }
+            ChatCmd::LeaveLobby(lobby) => {
+                info!("leaving lobby {lobby:?}");
 
-                    let mut lock = data.lobbies.write().await;
-                    if let Some(lobby) = lock.get_mut(&lobby) {
-                        self.leave_lobby(lobby).await;
-                    }
+                let mut lock = data.lobbies.write().await;
+                if let Some(lobby) = lock.get_mut(&lobby) {
+                    self.leave_lobby(lobby).await;
                 }
-                ChatCmd::SendMessage(lobby_id, msg) => {
-                    info!("SendMessage: msg {msg} to {lobby_id:?}");
+            }
+            ChatCmd::SendMessage(lobby_id, msg) => {
+                info!("SendMessage: msg {msg} to {lobby_id:?}");
 
-                    match lobby_id.ty {
-                        ChatIdType::TypeLobby => {
-                            // get lobby but don't hold the lock, tbd if this is useful
-                            let lobby = if let Some(lobby) =
-                                data.lobbies.read().await.get(&lobby_id.lobby_id.into())
-                            {
-                                lobby.to_owned()
-                            } else {
-                                return;
-                            };
+                match lobby_id.ty {
+                    ChatIdType::TypeLobby => {
+                        // get lobby but don't hold the lock, tbd if this is useful
+                        let lobby = if let Some(lobby) =
+                            data.lobbies.read().await.get(&lobby_id.lobby_id.into())
+                        {
+                            lobby.to_owned()
+                        } else {
+                            return;
+                        };
 
-                            self.send_message_lobby(&lobby, &msg).await;
+                        if !lobby.joined {
+                            warn!("trying to send message to unjoined lobby! {lobby:?}");
+                            return;
                         }
-                        _ => warn!("chat type {:?} is not supported", lobby_id.ty),
+
+                        self.send_message_lobby(&lobby, &msg).await;
                     }
+                    _ => warn!("chat type {:?} is not supported", lobby_id.ty),
                 }
             }
         }
@@ -798,7 +874,7 @@ impl Chat {
         let data = self.core.get_service_data().chat();
         let mut lock = data.lobbies.write().await;
 
-        match lock.entry(bounce_obj.publobby_id) {
+        match lock.entry(bounce_obj.public_lobby_id) {
             Entry::Occupied(mut entry) => {
                 // now check cache
                 match entry.get_mut().msg_cache.entry(bounce_obj.msg_id) {
@@ -816,15 +892,12 @@ impl Chat {
                 // no corresponding lobby found, dropping
                 warn!(
                     "received chat message for unknown lobby {}, dropping",
-                    bounce_obj.publobby_id
+                    bounce_obj.public_lobby_id
                 );
 
                 // trigger lobby request
-                for p in self.request_lobbies() {
-                    self.core_tx
-                        .send(Intercom::Send(p))
-                        .expect("failed to send to core");
-                }
+                self.request_lobbies();
+
                 false
             }
         }
@@ -889,9 +962,7 @@ impl Chat {
         state
     }
 
-    async fn verify_message(&self, key_id: &KeyId, data_signed: &[u8], signature: &[u8]) -> bool {
-        let key_id = key_id.to_owned().into();
-
+    async fn verify_message(&self, key_id: &GxsId, data_signed: &[u8], signature: &[u8]) -> bool {
         // get keys
         let key = match self
             .core
@@ -909,11 +980,20 @@ impl Chat {
         };
 
         // assert!((key.key_flags & 0x40) > 0);
-        assert!(key.key_flags.contains(TlvKeyFlags::DISTRIBUTE_ADMIN));
+        assert!(
+            key.key_flags.contains(TlvKeyFlags::DISTRIBUTE_ADMIN),
+            "key.key_flags.contains(TlvKeyFlags::DISTRIBUTE_ADMIN): {key:?}"
+        );
 
         match verify_signature(&key, data_signed, signature) {
-            Ok(true) => true,
-            Ok(false) => false,
+            Ok(true) => {
+                trace!("successfully verified message");
+                true
+            }
+            Ok(false) => {
+                warn!("failed to verified message");
+                false
+            }
             Err(err) => {
                 warn!("failed to verify: {err:#}");
                 false
@@ -921,9 +1001,7 @@ impl Chat {
         }
     }
 
-    async fn sign_message(&self, key_id: &KeyId, data_to_sign: &[u8]) -> Option<Vec<u8>> {
-        let key_id = key_id.to_owned();
-
+    async fn sign_message(&self, key_id: &GxsId, data_to_sign: &[u8]) -> Option<Vec<u8>> {
         // get keys
         let key = match self
             .core
@@ -941,7 +1019,10 @@ impl Chat {
         };
 
         // assert!((key.key_flags & 0x02) > 0);
-        assert!(key.key_flags.contains(TlvKeyFlags::TYPE_FULL));
+        assert!(
+            key.key_flags.contains(TlvKeyFlags::TYPE_FULL),
+            "key.key_flags.contains(TlvKeyFlags::TYPE_FULL): {key:?}"
+        );
 
         let res = match generate_signature(&key, data_to_sign) {
             Ok(signature) => Some(signature),
@@ -952,13 +1033,12 @@ impl Chat {
         };
 
         if let Some(signature) = &res {
-            if !self
-                .verify_message(&key_id.into(), data_to_sign, &signature)
-                .await
-            {
+            if !self.verify_message(&key_id, data_to_sign, &signature).await {
                 log::error!("signed message does not pass validation!");
             }
         }
+
+        trace!("successfully signed message");
 
         res
     }
@@ -970,78 +1050,68 @@ impl Service for Chat {
         ServiceType::Chat
     }
 
-    async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
-        trace!("handle_packet");
-
-        self.handle_incoming(&packet.header.into(), packet).await
+    fn get_service_info(&self) -> RsServiceInfo {
+        RsServiceInfo::new(self.get_id().into(), "chat")
     }
 
-    async fn tick(
-        &mut self,
-        _stats: &mut StatsCollection,
-        timers: &mut Timers,
-    ) -> Option<Vec<Packet>> {
-        self.handle_cmds().await;
+    fn run(mut self) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                select! {
+                    msg = self.rx.recv() => {
+                        if let Some(msg) = msg {
+                            trace!("handling msg {msg:?}");
 
-        let mut packets = vec![];
-        if timers
-            .get_mut(&LOBBY_MAINTENANCE_INTERVAL.0.to_string())
-            .unwrap()
-            .expired()
-        {
-            trace!("maintaining lobbies");
+                            match msg {
+                                Intercom::Receive(packet) =>
+                                    self.handle_incoming(&packet.header.to_owned().into(), packet).await,
+                                _ => warn!("unexpected message: {msg:?}"),
+                            }
+                        }
+                    }
+                    command = self.cmd_rx.recv() => {
+                        if let Some(command) = command {
+                            self.handle_cmd(command).await;
+                        }
+                    }
+                    _ = self.timer_lobby_keep_alive.tick() => {
+                        trace!("keep alive");
 
-            let mut lock = self.core.get_service_data().chat().lobbies.write().await;
+                        self.keep_alive(None).await
+                    }
+                    _ = self.timer_lobby_maintenance.tick() => {
+                        trace!("maintaining lobbies");
 
-            // trigger cleanup
-            lock.iter_mut()
-                .for_each(|(_, lobby)| lobby.maintain_lobby());
+                        let mut lock = self.core.get_service_data().chat().lobbies.write().await;
 
-            // gen challenges
-            for (_id, lobby) in &mut *lock {
-                if let Some(challenge_code) = self.generate_lobby_challenge(lobby).await {
-                    let item = ChatLobbyConnectChallengeItem { challenge_code };
-                    let payload = to_retroshare_wire(&item);
-                    let header = ServiceHeader::new(
-                        self.get_id(),
-                        CHAT_SUB_TYPE_CHAT_LOBBY_CHALLENGE,
-                        &payload,
-                    );
-                    let packet = Packet::new_without_location(header.into(), payload);
-                    packets.push(packet);
+                        // trigger cleanup
+                        lock.iter_mut()
+                            .for_each(|(_, lobby)| lobby.maintain_lobby());
+
+                        // gen challenges
+                        for (_id, lobby) in &mut *lock {
+                            if let Some(challenge_code) = self.generate_lobby_challenge(lobby).await {
+                                let item = ChatLobbyConnectChallengeItem { challenge_code };
+                                let payload = to_retroshare_wire(&item);
+                                let header = ServiceHeader::new(
+                                    self.get_id(),
+                                    CHAT_SUB_TYPE_CHAT_LOBBY_CHALLENGE,
+                                    &payload,
+                                );
+                                let packet = Packet::new_without_location(header.into(), payload);
+
+                                self.core_tx.send(Intercom::Send(packet)).expect("failed to send to core");
+                            }
+                        }
+                    }
+                    _ = self.timer_lobby_request.tick() => {
+                        trace!("requesting lobbies");
+
+                        self.request_lobbies();
+                    }
                 }
             }
-        }
-
-        if timers
-            .get_mut(&LOBBY_REQUEST_INTERVAL.0.to_string())
-            .unwrap()
-            .expired()
-        {
-            trace!("requesting lobbies");
-
-            packets.extend(self.request_lobbies());
-        }
-
-        if timers
-            .get_mut(&LOBBY_KEEP_ALIVE_INTERVAL.0.to_string())
-            .unwrap()
-            .expired()
-        {
-            trace!("keep alive");
-
-            packets.extend(self.keep_alive(None).await);
-        }
-
-        if packets.is_empty() {
-            None
-        } else {
-            Some(packets)
-        }
-    }
-
-    fn get_service_info(&self) -> (String, u16, u16, u16, u16) {
-        (String::from("chat"), 1, 0, 1, 0)
+        })
     }
 }
 

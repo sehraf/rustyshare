@@ -4,9 +4,11 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc::UnboundedSender, Mutex, MutexGuard};
 
-use retroshare_compat::{basics::SslId, events::EventType, gxs::GxsDatabaseBackend};
+use retroshare_compat::{basics::SslId, events::EventType};
 
-use crate::{low_level_parsing::Packet, retroshare_compat::ssl_key::SslKey};
+use crate::{
+    gxs::gxs_backend::GxsShared, low_level_parsing::Packet, retroshare_compat::ssl_key::SslKey,
+};
 
 use self::{
     intercom::Intercom,
@@ -21,17 +23,17 @@ pub mod location;
 pub mod person;
 pub mod services;
 
-pub struct ConnectedPeerEntries(
-    pub HashMap<Arc<SslId>, (UnboundedSender<Intercom>, tokio::task::JoinHandle<()>)>,
+pub struct ConnectedPeerEntries<TASK>(
+    pub HashMap<Arc<SslId>, (UnboundedSender<Intercom>, tokio::task::JoinHandle<TASK>)>,
 );
 
-impl Default for ConnectedPeerEntries {
+impl<TASK> Default for ConnectedPeerEntries<TASK> {
     fn default() -> Self {
         ConnectedPeerEntries(HashMap::new())
     }
 }
 
-#[derive(Debug, Getters)]
+#[derive(Getters)]
 pub struct DataCoreServiceStore {
     #[getset(get = "pub")]
     chat: ChatStore,
@@ -40,10 +42,10 @@ pub struct DataCoreServiceStore {
 }
 
 impl DataCoreServiceStore {
-    pub fn new(database: GxsDatabaseBackend) -> Self {
+    pub fn new(gxs_shared_id: Arc<GxsShared>) -> Self {
         DataCoreServiceStore {
             chat: ChatStore::new(),
-            gxs_id: GxsIdStore::new(database),
+            gxs_id: GxsIdStore::new(gxs_shared_id),
         }
     }
 }
@@ -60,7 +62,7 @@ pub struct DataCore {
 
     // gxs_dbs: Vec<Mutex<GxsDatabase>>,
     // gxs_ids: HashMap<GxsId, TlvSecurityKeySet>,
-    connected_peers: Mutex<ConnectedPeerEntries>,
+    connected_peers: Mutex<ConnectedPeerEntries<()>>,
 
     services: DataCoreServiceStore,
 }
@@ -70,7 +72,7 @@ impl DataCore {
         keys: SslKey,
         friends: (Vec<Arc<Peer>>, Vec<Arc<Location>>),
         peer_id: Arc<SslId>,
-        gxs_id_db: GxsDatabaseBackend,
+        gxs_shared_id: Arc<GxsShared>,
     ) -> Arc<DataCore> {
         let me = friends
             .1
@@ -94,7 +96,7 @@ impl DataCore {
                 connected_peers: Mutex::new(ConnectedPeerEntries::default()),
 
                 // services: RwLock::new(DataCoreServiceStore::default()),
-                services: DataCoreServiceStore::new(gxs_id_db),
+                services: DataCoreServiceStore::new(gxs_shared_id),
             };
             dc.init().await;
             dc
@@ -161,7 +163,7 @@ impl DataCore {
         self.connected_peers.lock().await.0.contains_key(&peer_id)
     }
 
-    pub fn get_connected_peers(&self) -> &Mutex<ConnectedPeerEntries> {
+    pub fn get_connected_peers(&self) -> &Mutex<ConnectedPeerEntries<()>> {
         &self.connected_peers
     }
 

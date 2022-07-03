@@ -7,7 +7,7 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use crate::{
     basics::{FileHash, GxsCircleId, GxsGroupId, GxsId, GxsMessageId, PeerId},
     gen_db_type,
-    gxs::{NxsItem, NxsSyncGrpItem, NxsSyncGrpItemFlags},
+    gxs::{NxsGrp, NxsItem, NxsSyncGrpItem, NxsSyncGrpItemFlags},
     impl_sql_for_bitflags, read_u32,
     serde::{from_retroshare_wire, from_retroshare_wire_result},
     tlv::{
@@ -554,11 +554,40 @@ impl From<GxsGroup> for GxsGrpMetaSql {
 impl From<GxsGroup> for NxsSyncGrpItem {
     fn from(group: GxsGroup) -> Self {
         NxsSyncGrpItem {
-            base: NxsItem { transaction_id: 0 },
+            base: NxsItem::default(),
             flag: NxsSyncGrpItemFlags::Response,
             grp_id: group.group_id,
             publish_ts: group.publish_ts as u32, // BUG RS is not using rstime_t here ...
             author_id: group.author_id,
+        }
+    }
+}
+
+impl<const TYPE: u16> From<NxsGrp<TYPE>> for GxsGroup {
+    fn from(nxs_item: NxsGrp<TYPE>) -> Self {
+        let meta = GxsGrpMetaSql::from_nxs(&mut nxs_item.meta.to_owned());
+        let data = GxsGrpDataSql {
+            group_id: nxs_item.grp_id,
+            meta_data: (*nxs_item.meta).to_owned(),
+            nxs_data: (*nxs_item.grp).to_owned(),
+            nxs_data_len: nxs_item.grp.len(),
+        };
+        let mut group: GxsGroup = meta.into();
+        group.set_blobs(data);
+        group
+    }
+}
+
+impl<const TYPE: u16> From<GxsGroup> for NxsGrp<TYPE> {
+    fn from(mut group: GxsGroup) -> Self {
+        Self {
+            base: NxsItem::default(),
+            pos: 0,
+            count: 0,
+            grp_id: group.group_id,
+            grp: group.blobs.group_data.take().unwrap().into(),
+            meta: group.blobs.meta_data.take().unwrap().into(),
+            meta_data: None,
         }
     }
 }

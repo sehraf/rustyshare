@@ -7,15 +7,16 @@ edition = "2021"
 [features]
 default = ["webui_actix"]
 webui_actix = ["actix-web", "actix-files", "mime"]
+use_tracing = ["tracing", "tracing-subscriber", "tracing-log", "flexi_logger/trc"]
 
 [dependencies]
 retroshare_compat = { path = "retroshare_compat" }
 
-chrono = "^0"
-rpassword = "^5"
+# chrono = "^0"
+rpassword = "5.0.1"                             # 6.0 pulls in serde ... yes a crate that reads password depends on serde and serde_json: https://github.com/conradkleinespel/rpassword/issues/68
 getset = "0.1"
-dirs = "^3"
-sequoia-openpgp = "1.8"
+dirs = "4.0"
+sequoia-openpgp = "1.9"
 openssl = "0.10"
 byteorder = "1.4"
 base64 = "0.13"
@@ -26,13 +27,24 @@ nanorand = "0.7"
 log = "0.4"
 # pretty_env_logger = "0.4"
 # env_logger = "0.9"
-flexi_logger = { version = "0.22", features = ["use_chrono_for_offset", "async"] }
+flexi_logger = { version = "0.22", features = [
+    "use_chrono_for_offset",
+    "async",
+    # "trc",
+] }
 
 # Tokio debugging
-# console-subscriber = "0.1"
+console-subscriber = "0.1"
+
+# tracing
+tracing = { version = "0.1", features = ["log"], optional = true }
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+], optional = true }
+tracing-log = { version = "0.1", optional = true } # optional dependency for tracing-subscriber to convert log events to tracing events
 
 # WebUI
-actix-web = { version = "4.0", optional = true }
+actix-web = { version = "4", optional = true }
 actix-files = { version = "0.6", optional = true }
 mime = { version = "0.3", optional = true }
 
@@ -40,15 +52,10 @@ mime = { version = "0.3", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# # database
-# rusqlite = { version = "0.27", features = [
-#     "sqlcipher",
-# ] } # TODO switch to bundled?
-
 # Async stuff
 futures = "0.3"
 async-trait = "0.1"
-tokio = { version = "1.18", features = ["full"] }
+tokio = { version = "1.19", features = ["full"] }
 
 rustls = { version = "0.20", features = ["dangerous_configuration"] }
 tokio-rustls = "0.23"

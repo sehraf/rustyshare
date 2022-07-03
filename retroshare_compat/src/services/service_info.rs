@@ -45,6 +45,24 @@ pub struct RsServiceInfo {
     pub m_min_version_minor: u16,
 }
 
+impl RsServiceInfo {
+    pub fn new(id: u16, name: &str) -> Self {
+        // TODO put this somewhere sound (with proper types)
+        let service_number = (0x02 as u32) << 24 | (id as u32) << 8;
+
+        RsServiceInfo {
+            m_service_name: name.to_owned(),
+            m_service_type: service_number,
+
+            // TODO currently RS makes no use of these and they are all like this for each service
+            m_version_major: 1,
+            m_version_minor: 0,
+            m_min_version_major: 1,
+            m_min_version_minor: 0,
+        }
+    }
+}
+
 // class RsServiceInfoListItem: public RsItem
 // {
 // 	public:

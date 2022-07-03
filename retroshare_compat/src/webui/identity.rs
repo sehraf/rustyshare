@@ -3,8 +3,11 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    basics::{GxsIdHex, PgpIdHex, PeerIdHex, GxsCircleIdHex, GxsGroupIdHex},
-    gxs::sqlite::types::{GroupFlags, GxsGrpMetaSql, GroupStatus, SubscribeFlags, AuthenFlags, GxsCircleType, SignFlags},
+    basics::{GxsCircleIdHex, GxsGroupIdHex, GxsIdHex, PeerIdHex, PgpIdHex},
+    gxs::sqlite::types::{
+        AuthenFlags, GroupFlags, GroupStatus, GxsCircleType, GxsGroup, GxsGrpMetaSql, SignFlags,
+        SubscribeFlags,
+    },
 };
 
 use super::{chat::GxsImage, XInt64};
@@ -197,6 +200,32 @@ impl From<GxsGrpMetaSql> for GxsGroupMeta {
             originator: x.originator.into(),
             internal_circle: x.internal_circle.into(),
             // ..Default::default()
+        }
+    }
+}
+
+impl From<GxsGroup> for GxsGroupMeta {
+    fn from(g: GxsGroup) -> Self {
+        GxsGroupMeta {
+            group_id: g.group_id.into(),
+            group_name: g.group_name,
+            group_flags: g.group_flags,
+            sign_flags: g.sign_flags,
+            publish_ts: g.publish_ts.into(),
+            author_id: g.author_id.into(),
+            circle_id: g.circle_id.into(),
+            circle_type: g.circle_type,
+            authen_flags: g.authen_flags,
+            parent_grp_id: g.parent_grp_id.into(),
+            subscribe_flags: g.subscribe_flags,
+            pop: g.pop,
+            visible_msg_count: g.visible_msg_count,
+            last_post: g.last_post.into(),
+            last_seen: g.last_post.into(),
+            group_status: g.group_status,
+            service_string: g.service_string,
+            originator: g.originator.into(),
+            internal_circle: g.internal_circle.into(),
         }
     }
 }

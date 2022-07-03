@@ -62,7 +62,7 @@ pub async fn run_actix(data_core: Arc<DataCore>) {
             .app_data(web::Data::new(data_core))
             // json config
             .app_data(web::JsonConfig::default().limit(4096))
-            // rsPeers
+            // rsPeers TODO
             .service(peers::get_entry_points())
             // rsMsgs
             .service(msgs::get_entry_points())

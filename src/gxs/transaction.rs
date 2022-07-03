@@ -12,7 +12,7 @@ use retroshare_compat::{
 const SYNC_PERIOD: u32 = 60;
 #[allow(unused)]
 const MAX_REQLIST_SIZE: u32 = 20; // No more than 20 items per msg request list => creates smaller transactions that are less likely to be cancelled.
-const TRANSAC_TIMEOUT: u32 = 2000; // In seconds. Has been increased to avoid epidemic transaction cancelling due to overloaded outqueues.
+const TRANSACTION_TIMEOUT: u32 = 2000; // 2000; // In seconds. Has been increased to avoid epidemic transaction cancelling due to overloaded outqueues.
 
 pub type TransactionId = u32;
 
@@ -35,7 +35,7 @@ pub enum NxsTransactionState {
 #[derive(Debug)]
 pub struct NxsTransaction<const T: u16> {
     pub transaction_id: TransactionId,
-    pub peer: Arc<SslId>,
+    pub peer_id: Arc<SslId>,
 
     pub state: NxsTransactionState,
     pub initial_packet: NxsTransactionItem,
@@ -43,6 +43,8 @@ pub struct NxsTransaction<const T: u16> {
     pub items: Vec<StoredNxsItem<T>>,
 
     pub timeout: SystemTime,
+
+    finished: bool,
 }
 
 impl<const T: u16> NxsTransaction<T> {
@@ -53,15 +55,18 @@ impl<const T: u16> NxsTransaction<T> {
     ) -> Self {
         NxsTransaction {
             transaction_id,
-            peer,
+            peer_id: peer,
 
             state: NxsTransactionState::Starting,
             initial_packet,
             items: vec![],
 
             timeout: SystemTime::now()
-                .checked_add(Duration::from_secs(TRANSAC_TIMEOUT as u64))
+                .checked_add(Duration::from_secs(TRANSACTION_TIMEOUT as u64))
                 .unwrap(),
+
+            /// This is used for debugging to verify that each transaction runs through everything necessary (and e.g. does not get dropped too early at some point)
+            finished: false,
         }
     }
 
@@ -73,15 +78,17 @@ impl<const T: u16> NxsTransaction<T> {
     ) -> Self {
         NxsTransaction {
             transaction_id,
-            peer,
+            peer_id: peer,
 
             state: NxsTransactionState::WaitingConfirm,
             initial_packet,
             items,
 
             timeout: SystemTime::now()
-                .checked_add(Duration::from_secs(TRANSAC_TIMEOUT as u64))
+                .checked_add(Duration::from_secs(TRANSACTION_TIMEOUT as u64))
                 .unwrap(),
+
+            finished: false,
         }
     }
 
@@ -92,4 +99,27 @@ impl<const T: u16> NxsTransaction<T> {
     pub fn complete(&self) -> bool {
         self.initial_packet.items as usize == self.items.len()
     }
+
+    pub fn mark_finished(&mut self) {
+        if self.finished {
+            log::error!("already finished! {}", self.transaction_id);
+        }
+        self.finished = true;
+    }
+
+    pub fn check_finished(&self) {
+        if !self.finished {
+            log::error!("NOT finished! {}", self.transaction_id);
+        }
+    }
+
+    // pub fn equivalent(&self, other: &Self) -> bool {
+    //     for entry in &self.items {
+    //         if !other.items.contains(entry) {
+    //             return false;
+    //         }
+    //     }
+
+    //     true
+    // }
 }

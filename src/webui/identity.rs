@@ -6,7 +6,7 @@ use actix_web::{
     Responder, Result,
 };
 use retroshare_compat::{
-    basics::{GxsId, GxsIdHex, PgpIdHex},
+    basics::{GxsGroupId, GxsId, GxsIdHex, PgpIdHex},
     gxs::sqlite::types::{GroupFlags, SubscribeFlags},
     webui::identity::{GxsGroupMeta, IdentityDetails},
 };
@@ -24,17 +24,15 @@ pub struct IdentitiesSummaries {
 pub async fn rs_identity_get_identities_summaries(
     state: web::Data<Arc<DataCore>>,
 ) -> Result<impl Responder> {
-    Ok(web::Json(IdentitiesSummaries {
-        retval: true,
-        ids: state
-            .get_service_data()
-            .gxs_id()
-            .get_identities_summaries()
-            .await
-            .into_iter()
-            .map(|entry| entry.into())
-            .collect(),
-    }))
+    let ids = state
+        .get_service_data()
+        .gxs_id()
+        .get_group_meta_all()
+        .await
+        .into_iter()
+        .map(|entry| entry.into())
+        .collect();
+    Ok(web::Json(IdentitiesSummaries { retval: true, ids }))
 }
 
 // rsIdentity/getOwnSignedIds
@@ -53,7 +51,7 @@ pub async fn rs_identity_get_own_signed_ids(
     let ids = state
         .get_service_data()
         .gxs_id()
-        .get_identities_summaries()
+        .get_group_meta_all()
         .await
         .iter()
         .filter_map(|entry| {
@@ -90,7 +88,7 @@ pub async fn rs_identity_get_own_pseudonymous_ids(
     let ids = state
         .get_service_data()
         .gxs_id()
-        .get_identities_summaries()
+        .get_group_meta_all()
         .await
         .iter()
         .filter_map(|entry| {
@@ -132,16 +130,18 @@ pub async fn rs_identity_get_id_details(
     state: web::Data<Arc<DataCore>>,
     id: web::Json<GetIdDetailsIn>,
 ) -> Result<impl Responder> {
-    let meta = state
+    // let meta = state.get_service_data().gxs_id().get_group_meta_all().await;
+    // let details = meta
+    //     .iter()
+    //     .find(|entry| entry.group_id.to_vec() == id.id.to_vec())
+    //     .unwrap()
+    //     .to_owned();
+    let details = state
         .get_service_data()
         .gxs_id()
-        .get_identities_summaries()
-        .await;
-    let details = meta
-        .iter()
-        .find(|entry| entry.group_id.to_vec() == id.id.to_vec())
-        .unwrap()
-        .to_owned();
+        .get_group_meta(&GxsGroupId::from(id.id.0))
+        .await
+        .unwrap();
     let details = IdentityDetails {
         id: Into::<GxsId>::into(details.group_id.to_vec()).into(),
         nickname: details.group_name.to_owned(),

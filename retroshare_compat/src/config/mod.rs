@@ -104,7 +104,6 @@ pub struct PeerNetItem {
 
 bitflags! {
     pub struct ServicePermissionFlags: u32 {
-        const NONE       = 0x00000000;  // 0x1, 0x2 and Ox4 are deprecated.
         const DIRECT_DL  = 0x00000008;  // Accept to directly DL from this peer (breaks anonymity)
         const ALLOW_PUSH = 0x00000010;  // Auto-DL files recommended by this peer
         const REQUIRE_WL = 0x00000020;  // Require white list clearance for connection

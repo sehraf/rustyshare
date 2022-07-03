@@ -76,3 +76,9 @@ impl Clone for Packet {
         Packet(Box::new(self.deref().clone()))
     }
 }
+
+impl AsRef<PacketInner> for Packet {
+    fn as_ref(&self) -> &PacketInner {
+        &self.0
+    }
+}

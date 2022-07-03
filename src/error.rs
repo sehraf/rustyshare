@@ -8,6 +8,7 @@ pub enum RsError {
     // ServiceError(RsErrorService),
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum RsErrorParser {
     IsRawHeader,

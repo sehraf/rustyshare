@@ -1,47 +1,61 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use log::debug;
+use log::{debug, trace, warn};
+use retroshare_compat::services::service_info::RsServiceInfo;
+use tokio::{
+    select,
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
+    time::interval,
+};
 
 use crate::{
-    handle_packet,
     low_level_parsing::{
         headers::{Header, ServiceHeader},
         Packet,
     },
-    services::{HandlePacketResult, Service},
-    utils::{simple_stats::StatsCollection, Timer, Timers},
+    model::intercom::Intercom,
+    send_to_peer,
+    services::Service,
 };
 
 use ::retroshare_compat::services::ServiceType;
 
 const HEARTBEAT_SUB_SERVICE: u8 = 0x01;
 
+#[allow(dead_code)]
 const HEARTBEAT_INTERVAL: (&str, Duration) = ("heartbeat", Duration::from_secs(5));
 const HEARTBEAT_PACKET: Header = Header::Service {
     service: ServiceType::Heartbeat,
     sub_type: HEARTBEAT_SUB_SERVICE,
     size: 8,
 };
-pub struct Heartbeat();
+pub struct Heartbeat {
+    peer_tx: UnboundedSender<Intercom>,
+    rx: UnboundedReceiver<Intercom>,
+}
 
 impl Heartbeat {
-    pub fn new(timers: &mut Timers) -> Heartbeat {
-        timers.insert(
-            HEARTBEAT_INTERVAL.0.into(),
-            Timer::new(HEARTBEAT_INTERVAL.1),
-        );
-
-        Heartbeat()
+    pub fn new(
+        _core_tx: UnboundedSender<Intercom>,
+        peer_tx: UnboundedSender<Intercom>,
+        rx: UnboundedReceiver<Intercom>,
+    ) -> Heartbeat {
+        Heartbeat { peer_tx, rx }
     }
 
-    pub fn handle_incoming(&self, header: &ServiceHeader, packet: Packet) -> HandlePacketResult {
+    fn handle_incoming(&self, header: &ServiceHeader, packet: Packet) {
         assert_eq!(header.sub_type, HEARTBEAT_SUB_SERVICE);
         assert_eq!(packet.payload.len(), 0);
 
-        debug!("[heartbeat] received heart beat");
+        debug!("received heart beat");
+    }
 
-        handle_packet!()
+    async fn tick(&mut self) {
+        let packet = Packet::new_without_location(HEARTBEAT_PACKET, vec![]);
+        // self.peer_tx.send(Intercom::Send(packet)).expect("failed to send to peer");
+        send_to_peer!(self, packet);
     }
 }
 
@@ -51,35 +65,30 @@ impl Service for Heartbeat {
         ServiceType::Heartbeat
     }
 
-    async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
-        debug!("handle_packet");
-
-        self.handle_incoming(&packet.header.into(), packet)
+    fn get_service_info(&self) -> RsServiceInfo {
+        RsServiceInfo::new(self.get_id().into(), "heartbeat")
     }
 
-    async fn tick(
-        &mut self,
-        _stats: &mut StatsCollection,
-        timers: &mut Timers,
-    ) -> Option<Vec<Packet>> {
-        // if self.last_send.elapsed() >= HEARTBEAT_INTERVAL {
-        //     self.last_send = Instant::now();
+    fn run(mut self) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut tick_timer = interval(Duration::from_secs(5));
 
-        //     let packet = Packet::new_without_location(HEARTBEAT_PACKET, vec![]);
-        //     return Some(vec![packet]);
-        // }
-        if timers
-            .get_mut(HEARTBEAT_INTERVAL.0.into())
-            .unwrap()
-            .expired()
-        {
-            let packet = Packet::new_without_location(HEARTBEAT_PACKET, vec![]);
-            return Some(vec![packet]);
-        }
-        None
-    }
-
-    fn get_service_info(&self) -> (String, u16, u16, u16, u16) {
-        (String::from("heartbeat"), 1, 0, 1, 0)
+            loop {
+                select! {
+                    msg = self.rx.recv() => {
+                        if let Some(msg) = msg {
+                            trace!("handling msg {msg:?}");
+                            match msg {
+                                Intercom::Receive(packet) => self.handle_incoming(&packet.header.to_owned().into(), packet),
+                                _ => warn!("unexpected message: {msg:?}"),
+                            }
+                        }
+                    }
+                    _ = tick_timer.tick() => {
+                        self.tick().await;
+                    }
+                }
+            }
+        })
     }
 }

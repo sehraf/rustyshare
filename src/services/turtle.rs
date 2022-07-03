@@ -1,27 +1,31 @@
 use async_trait::async_trait;
-use log::{debug, info, trace, warn};
+use log::{info, trace, warn};
 use nanorand::{Rng, WyRand};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::{
+    select,
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
+    time::{interval, Interval},
+};
 
-use retroshare_compat::{basics::SslId, serde::from_retroshare_wire_result, services::turtle::*};
+use retroshare_compat::{
+    basics::SslId,
+    serde::from_retroshare_wire,
+    services::{service_info::RsServiceInfo, turtle::*},
+};
 
 use crate::{
-    handle_packet,
     low_level_parsing::{headers::ServiceHeader, Packet},
     // error,
     model::{intercom::Intercom, location::Location, DataCore},
-    services::{HandlePacketResult, Service},
-    utils::{
-        self,
-        simple_stats::{StatsCollection, StatsPrinter},
-        units::pretty_print_bytes,
-        Timer, Timers,
-    },
+    send_to_core,
+    services::Service,
+    utils::{self, simple_stats::StatsPrinter, units::pretty_print_bytes},
 };
 
 use ::retroshare_compat::services::ServiceType;
@@ -51,19 +55,22 @@ const TUNNEL_REQUESTS_RESULT_TIME: Duration = Duration::from_secs(20);
 /// maximum life time of an unused tunnel.
 const MAXIMUM_TUNNEL_IDLE_TIME: Duration = Duration::from_secs(60);
 
-// TODO
-const TURTLE_TIMER_MAINTAINANCE: (&str, Duration) = ("maintainance", Duration::from_secs(5));
-
 // stats stuff
+#[allow(dead_code)]
 const ENTRY_A: &str = &"times_forwarded";
+#[allow(dead_code)]
 const ENTRY_A_FN: StatsPrinter = |data| -> String { format!("{} times", data) };
 
+#[allow(dead_code)]
 const ENTRY_B: &str = &"data_forwarded";
+#[allow(dead_code)]
 const ENTRY_B_FN: StatsPrinter =
     |data| -> String { format!("{}", pretty_print_bytes(data as u64)) };
 
 pub struct Turtle {
-    core: UnboundedSender<Intercom>,
+    rx: UnboundedReceiver<Intercom>,
+
+    core_tx: UnboundedSender<Intercom>,
 
     rng: Arc<RwLock<WyRand>>,
     locations: Vec<Arc<Location>>,
@@ -73,40 +80,37 @@ pub struct Turtle {
 
     stats_forwarded_count: Mutex<i32>,
     stats_forwarded_data: Mutex<i32>,
+
+    timer_maintenance: Interval,
 }
 
 // TODO handle peers disconnecting
 
 impl Turtle {
     pub async fn new(
-        dc: &Arc<DataCore>,
+        core: &Arc<DataCore>,
         core_tx: UnboundedSender<Intercom>,
-        timers: &mut Timers,
+        rx: UnboundedReceiver<Intercom>,
     ) -> Turtle {
-        timers.insert(
-            TURTLE_TIMER_MAINTAINANCE.0.into(),
-            Timer::new(TURTLE_TIMER_MAINTAINANCE.1),
-        );
-
         Turtle {
-            core: core_tx,
+            rx,
+
+            core_tx,
 
             rng: Arc::new(RwLock::new(WyRand::new())),
-            locations: dc.get_locations().clone(),
+            locations: core.get_locations().clone(),
 
             tunnel_history: RwLock::new(HashMap::new()),
             tunnel_active: RwLock::new(HashMap::new()),
 
             stats_forwarded_count: Mutex::new(0),
             stats_forwarded_data: Mutex::new(0),
+
+            timer_maintenance: interval(Duration::from_secs(5)),
         }
     }
 
-    pub async fn handle_incoming(
-        &self,
-        header: &ServiceHeader,
-        packet: Packet,
-    ) -> HandlePacketResult {
+    fn handle_incoming(&self, header: &ServiceHeader, mut packet: Packet) {
         trace!("handle_incoming: {header:?}");
         // // exclude handled ones
         // if ![
@@ -120,50 +124,57 @@ impl Turtle {
         // }
 
         match header.sub_type {
-            TURTLE_SUB_TYPE_STRING_SEARCH_REQUEST => {}
+            TURTLE_SUB_TYPE_STRING_SEARCH_REQUEST => {
+                let item: TurtleStringSearchRequestItem = from_retroshare_wire(&mut packet.payload);
+                info!("search request: string: {item:?}");
+            }
             TURTLE_SUB_TYPE_FT_SEARCH_RESULT => {}
             TURTLE_SUB_TYPE_OPEN_TUNNEL => {
-                return self.handle_open_tunnel(packet).await;
+                self.handle_open_tunnel(packet);
             }
             TURTLE_SUB_TYPE_TUNNEL_OK => {
-                return self.handle_tunnel_ok(packet);
+                self.handle_tunnel_ok(packet);
             }
             TURTLE_SUB_TYPE_FILE_REQUEST => {}
             TURTLE_SUB_TYPE_FILE_DATA => {}
-            TURTLE_SUB_TYPE_REGEXP_SEARCH_REQUEST => {}
-            TURTLE_SUB_TYPE_GENERIC_DATA => {
-                return self.handle_generic_data(packet);
+            TURTLE_SUB_TYPE_REGEXP_SEARCH_REQUEST => {
+                let item: TurtleRegExpSearchRequestItem = from_retroshare_wire(&mut packet.payload);
+                info!("search request: regex: {item:?}");
             }
-            TURTLE_SUB_TYPE_GENERIC_SEARCH_REQUEST => {}
+            TURTLE_SUB_TYPE_GENERIC_DATA => {
+                self.handle_generic_data(packet);
+            }
+            TURTLE_SUB_TYPE_GENERIC_SEARCH_REQUEST => {
+                let item: TurtleGenericSearchRequestItem =
+                    from_retroshare_wire(&mut packet.payload);
+                info!("search request: generic: {item:?}");
+            }
             TURTLE_SUB_TYPE_GENERIC_SEARCH_RESULT => {}
             TURTLE_SUB_TYPE_FILE_MAP => {}
             TURTLE_SUB_TYPE_FILE_MAP_REQUEST => {}
             TURTLE_SUB_TYPE_FILE_CRC | TURTLE_SUB_TYPE_FILE_CRC_REQUEST => {
                 // RetroShare has these commented out
-                warn!("[Turtle] {} should not be used", header.sub_type);
-                warn!("[Turtle] sent by {}", &packet.peer_id);
+                warn!("{} should not be used", header.sub_type);
+                warn!("sent by {}", &packet.peer_id);
                 unimplemented!();
             }
             TURTLE_SUB_TYPE_CHUNK_CRC => {}
             TURTLE_SUB_TYPE_CHUNK_CRC_REQUEST => {}
             TURTLE_SUB_TYPE_GENERIC_FAST_DATA => {}
             sub_type => {
-                log::error!("[Turtle] recevied unknown sub typ {sub_type}");
+                log::error!("received unknown sub typ {sub_type}");
             }
         }
-
-        handle_packet!()
     }
 
-    async fn handle_open_tunnel(&self, mut packet: Packet) -> HandlePacketResult {
+    fn handle_open_tunnel(&self, mut packet: Packet) {
         // forward based on simple probability
-        // RS does a lot of math to be "safe", this has been disscussed often in the past
+        // RS does a lot of math to be "safe", this has been discussed often in the past
 
         // create a copy for simple replay
-        let item: TurtleOpenTunnelItem =
-            from_retroshare_wire_result(&mut packet.payload.clone()).expect("failed to deserialze");
+        let item: TurtleOpenTunnelItem = from_retroshare_wire(&mut packet.payload.clone());
 
-        trace!("[Turtle] received open tunnel request: {item}");
+        trace!("received open tunnel request: {item}");
 
         // bounce check!
         if self
@@ -172,13 +183,13 @@ impl Turtle {
             .expect("failed to get history, lock poisoned!")
             .contains_key(&item.request_id)
         {
-            trace!("[Turtle] dropping bounced tunnel request! {}", item);
-            return handle_packet!();
+            trace!("dropping bounced tunnel request! {}", item);
+            return;
         }
 
         if !self.forward() {
-            trace!("[Turtle] dropping tunnel request! {}", item);
-            return handle_packet!();
+            trace!("dropping tunnel request! {}", item);
+            return;
         }
 
         // TODO add own file sharing ability BELOW the forward check
@@ -194,28 +205,26 @@ impl Turtle {
 
         for loc in &self.locations {
             if loc.is_connected() {
-                // skipp the packet's origin
+                // skip the packet's origin
                 if loc.get_location_id() == packet.peer_id {
                     continue;
                 }
 
                 packet.peer_id = loc.get_location_id().to_owned();
-                self.core
-                    .send(Intercom::Send(packet.clone()))
-                    .expect("failed to communicate with core!");
+                // self.core_tx
+                //     .send(Intercom::Send(packet.clone()))
+                //     .expect("failed to communicate with core!");
+                send_to_core!(self, packet.to_owned());
             }
         }
-        trace!("[Turtle] spreading tunnel request! {}", item);
-
-        handle_packet!()
+        trace!("spreading tunnel request! {}", item);
     }
 
-    fn handle_tunnel_ok(&self, mut packet: Packet) -> HandlePacketResult {
+    fn handle_tunnel_ok(&self, mut packet: Packet) {
         // create a copy for simple forward
-        let item: TurtleTunnelOkItem =
-            from_retroshare_wire_result(&mut packet.payload.clone()).expect("failed to deserialze");
+        let item: TurtleTunnelOkItem = from_retroshare_wire(&mut packet.payload.clone());
 
-        trace!("[Turtle] received tunnel ok: {item}");
+        trace!("received tunnel ok: {item}");
 
         // look up id
         let entry = self
@@ -225,20 +234,20 @@ impl Turtle {
             .remove(&item.request_id);
         if entry.is_none() {
             trace!(
-                "[Turtle] unable to find pending tunnel request for id {:08x}!",
+                "unable to find pending tunnel request for id {:08x}!",
                 &item.request_id,
             );
-            return handle_packet!();
+            return;
         }
 
         // entry still fresh?
         let request = entry.unwrap();
         if request.time.elapsed() > TUNNEL_REQUESTS_RESULT_TIME {
             trace!(
-                "[Turtle] found pending tunnel request for id {:08x} but it's too old!",
+                "found pending tunnel request for id {:08x} but it's too old!",
                 &item.request_id
             );
-            return handle_packet!();
+            return;
         }
 
         // everything is ok, insert new tunnel
@@ -254,22 +263,21 @@ impl Turtle {
             .insert(item.tunnel_id, entry);
         if prev.is_some() {
             warn!(
-                "[Turtle] DOUBLE TUNNEL TROUBLE (replacing an existing tunnel with ... itself?!? nobody knows!)"
+                "DOUBLE TUNNEL TROUBLE (replacing an existing tunnel with ... itself?!? nobody knows!)"
             );
         }
 
-        trace!("[Turtle] forwarding {:08x}", &item.tunnel_id);
+        trace!("forwarding {:08x}", &item.tunnel_id);
 
-        // send reponse
+        // send response
         packet.peer_id = request.from.clone();
 
-        handle_packet!(packet)
+        send_to_core!(self, packet);
     }
 
-    fn handle_generic_data(&self, mut packet: Packet) -> HandlePacketResult {
+    fn handle_generic_data(&self, mut packet: Packet) {
         // create a copy for simple forward
-        let item: TurtleGenericDataItem =
-            from_retroshare_wire_result(&mut packet.payload.clone()).expect("failed to deserialze");
+        let item: TurtleGenericDataItem = from_retroshare_wire(&mut packet.payload.clone());
 
         trace!("received generic data: {item}");
 
@@ -281,10 +289,10 @@ impl Turtle {
         let entry = lock.get_mut(&item.tunnel_id);
         if entry.is_none() {
             trace!(
-                "[Turtle] unable to find active tunnel request for id {:08x}",
+                "unable to find active tunnel request for id {:08x}",
                 &item.tunnel_id
             );
-            return handle_packet!();
+            return;
         }
         let mut entry = entry.unwrap();
 
@@ -295,16 +303,16 @@ impl Turtle {
             packet.peer_id = entry.from.clone();
         } else {
             info!(
-                "[Turtle] generic data item has active tunnel {:08x} but no matching source / destination! Dropping tunnel!",
+                "generic data item has active tunnel {:08x} but no matching source / destination! Dropping tunnel!",
                 &item.tunnel_id
             );
             lock.remove(&item.tunnel_id);
-            return handle_packet!();
+            return;
         }
         entry.last_active = Instant::now();
 
         trace!(
-            "[Turtle] forwarding data (id: {:08x}, size: {})",
+            "forwarding data (id: {:08x}, size: {})",
             &item.tunnel_id,
             utils::units::pretty_print_bytes(packet.header.get_payload_size() as u64)
         );
@@ -313,14 +321,14 @@ impl Turtle {
         *self
             .stats_forwarded_count
             .lock()
-            .expect("failed to get stats_forwarded_count, lock poisened!") += 1;
+            .expect("failed to get stats_forwarded_count, lock poisoned!") += 1;
         *self
             .stats_forwarded_data
             .lock()
-            .expect("failed to get stats_forwarded_data, lock poisened!") +=
+            .expect("failed to get stats_forwarded_data, lock poisoned!") +=
             packet.header.get_payload_size() as i32;
 
-        handle_packet!(packet)
+        send_to_core!(self, packet);
     }
 
     fn forward(&self) -> bool {
@@ -351,86 +359,68 @@ impl Service for Turtle {
         ServiceType::Turtle
     }
 
-    async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
-        debug!("handle_packet");
-
-        self.handle_incoming(&packet.header.into(), packet).await
+    fn get_service_info(&self) -> RsServiceInfo {
+        RsServiceInfo::new(self.get_id().into(), "turtle")
     }
 
-    async fn tick(
-        &mut self,
-        stats: &mut StatsCollection,
-        timers: &mut Timers,
-    ) -> Option<Vec<Packet>> {
-        // clean up caches
-        // const COUNTER_MAX: u8 = 10; // arbitrary
-        // self.counter += 1;
-        // if self.counter > COUNTER_MAX {
-        //     self.counter = 0;
-        if timers
-            .get_mut(TURTLE_TIMER_MAINTAINANCE.0.into())
-            .unwrap()
-            .expired()
-        {
-            // Do not block! It is not worth blocking the main tick!
-            if let Ok(mut history) = self.tunnel_history.try_write() {
-                history.retain(|_, e| e.time.elapsed() < TUNNEL_REQUESTS_LIFE_TIME);
+    fn run(mut self) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                select! {
+                    msg = self.rx.recv() => {
+                        if let Some(msg) = msg {
+                            trace!("handling msg {msg:?}");
+
+                            match msg {
+                                Intercom::Receive(packet) =>
+                                    self.handle_incoming(&packet.header.to_owned().into(), packet),
+                                _ => warn!("unexpected message: {msg:?}"),
+                            }
+                        }
+                    }
+                    _ = self.timer_maintenance.tick() => {
+                        // Do not block! It is not worth blocking the main tick!
+                        if let Ok(mut history) = self.tunnel_history.try_write() {
+                            history.retain(|_, e| e.time.elapsed() < TUNNEL_REQUESTS_LIFE_TIME);
+                        }
+                        if let Ok(mut active) = self.tunnel_active.try_write() {
+                            active.retain(|_, e| e.last_active.elapsed() < MAXIMUM_TUNNEL_IDLE_TIME);
+                        }
+
+                        // DEBUG
+
+                        // println!("[Turtle] tunnel request history:");
+                        // let lock = self
+                        //     .tunnel_history
+                        //     .read()
+                        //     .expect("failed to get history, lock poisoned!");
+                        // for entry in lock.iter() {
+                        //     print!(" {:08x}", entry.0);
+                        // }
+                        // if !lock.is_empty() {
+                        //     print!("\n");
+                        // }
+                        // drop(lock);
+
+                        // println!("[Turtle] active tunnels:");
+                        // let lock = self
+                        //     .tunnel_active
+                        //     .read()
+                        //     .expect("failed to get active tunnels, lock poisoned!");
+                        // for entry in lock.iter() {
+                        //     println!(
+                        //         " - id: {:08x}, entry: {} -> {} (last active: {:2?} secs)",
+                        //         entry.0,
+                        //         entry.1.from,
+                        //         entry.1.to,
+                        //         entry.1.last_active.elapsed().as_secs()
+                        //     );
+                        // }
+                        // drop(lock);
+                    }
+                }
             }
-            if let Ok(mut active) = self.tunnel_active.try_write() {
-                active.retain(|_, e| e.last_active.elapsed() < MAXIMUM_TUNNEL_IDLE_TIME);
-            }
-
-            // DEBUG
-
-            // println!("[Turtle] tunnel request history:");
-            // let lock = self
-            //     .tunnel_history
-            //     .read()
-            //     .expect("failed to get history, lock poisoned!");
-            // for entry in lock.iter() {
-            //     print!(" {:08x}", entry.0);
-            // }
-            // if !lock.is_empty() {
-            //     print!("\n");
-            // }
-            // drop(lock);
-
-            // println!("[Turtle] active tunnels:");
-            // let lock = self
-            //     .tunnel_active
-            //     .read()
-            //     .expect("failed to get active tunnels, lock poisoned!");
-            // for entry in lock.iter() {
-            //     println!(
-            //         " - id: {:08x}, entry: {} -> {} (last active: {:2?} secs)",
-            //         entry.0,
-            //         entry.1.from,
-            //         entry.1.to,
-            //         entry.1.last_active.elapsed().as_secs()
-            //     );
-            // }
-            // drop(lock);
-        }
-
-        // update stats
-        let name = self.get_service_info().0; // generic way to always have the right name
-        let entry = stats.1.entry(name).or_insert(HashMap::new());
-        // times data forwarded
-        entry.entry(ENTRY_A.to_owned()).or_insert((ENTRY_A_FN, 0)).1 +=
-            *self.stats_forwarded_count.lock().expect("lock poisened!");
-        // data amount forwarded
-        entry.entry(ENTRY_B.to_owned()).or_insert((ENTRY_B_FN, 0)).1 +=
-            *self.stats_forwarded_data.lock().expect("lock poisened!");
-
-        // reset stats
-        *self.stats_forwarded_count.lock().expect("lock poisened!") = 0;
-        *self.stats_forwarded_data.lock().expect("lock poisened!") = 0;
-
-        None
-    }
-
-    fn get_service_info(&self) -> (String, u16, u16, u16, u16) {
-        (String::from("turtle"), 1, 0, 1, 0)
+        })
     }
 }
 

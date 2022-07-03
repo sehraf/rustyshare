@@ -1,40 +1,42 @@
-#![warn(
-    clippy::await_holding_lock,
-    clippy::cargo_common_metadata,
-    clippy::dbg_macro,
-    clippy::empty_enum,
-    clippy::enum_glob_use,
-    clippy::inefficient_to_string,
-    clippy::mem_forget,
-    clippy::mutex_integer,
-    clippy::needless_continue,
-    clippy::todo,
-    clippy::unimplemented,
-    clippy::wildcard_imports,
-    future_incompatible,
-    // missing_docs,
-    missing_debug_implementations,
-    unreachable_pub
-)]
+// #![warn(
+//     clippy::await_holding_lock,
+//     clippy::cargo_common_metadata,
+//     clippy::dbg_macro,
+//     clippy::empty_enum,
+//     clippy::enum_glob_use,
+//     clippy::inefficient_to_string,
+//     clippy::mem_forget,
+//     clippy::mutex_integer,
+//     clippy::needless_continue,
+//     clippy::todo,
+//     clippy::unimplemented,
+//     clippy::wildcard_imports,
+//     future_incompatible,
+//     // missing_docs,
+//     missing_debug_implementations,
+//     unreachable_pub
+// )]
 
 use controller::CoreController;
-use flexi_logger::{Duplicate, FileSpec, LevelFilter, LogSpecification, WriteMode};
 use log::warn;
 use std::{
     convert::TryInto,
     fs::File,
     io::{self, Read},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
     sync::Arc,
 };
-use tokio::{self, select};
+use tokio::select;
+// use tracing_log::trace_logger;
+// use tokio::{self, select};
 
 use ::retroshare_compat::basics::*;
 
 mod controller;
 mod error;
 mod gxs;
+#[allow(unused_imports)]
+mod log_internal;
 mod low_level_parsing;
 mod model;
 mod retroshare_compat;
@@ -156,43 +158,7 @@ fn select_location(base_dir: &Path, keys: &Keyring) -> Option<(String, X509, ope
 
 #[tokio::main]
 async fn main() {
-    let mut builder = LogSpecification::builder();
-    builder
-        // .module(
-        //     "retroshare_compat::gxs::sqlite::database",
-        //     LevelFilter::Trace,
-        // )
-        // .module("rustyshare::controller::connected_peer", LevelFilter::Debug)
-        // .module("rustyshare::controller", LevelFilter::Trace)
-        // .module("rustyshare::gxs", LevelFilter::Trace)
-        // .module("rustyshare::gxs::gxsid", LevelFilter::Debug)
-        // .module("rustyshare::gxs::nxs_transactions", LevelFilter::Debug)
-        // .module("rustyshare::services", LevelFilter::Trace)
-        .module("rustyshare::services::heartbeat", LevelFilter::Warn)
-        .module("rustyshare::services::bwctrl", LevelFilter::Warn)
-        // .module("rustyshare::services::chat", LevelFilter::Debug)
-        // .module("rustyshare::services::gxs_id", LevelFilter::Debug)
-        // .module("rustyshare::services::turtle", LevelFilter::Trace)
-        // .module("sequoia_openpgp", LevelFilter::Trace)
-        // .module("actix", LevelFilter::Trace)
-        .module("actix_web", LevelFilter::Trace)
-        .default(LevelFilter::Info);
-    flexi_logger::Logger::with(builder.finalize())
-        // use async output
-        .write_mode(WriteMode::Async)
-        // write to log file (overwrite old one)
-        .log_to_file(FileSpec::default().suppress_timestamp())
-        // log log file name
-        .print_message()
-        // use buffered writing
-        .write_mode(WriteMode::BufferAndFlush)
-        // also print to stderr
-        .duplicate_to_stderr(Duplicate::All)
-        .start()
-        .expect("failed to start logger");
-
-    // Tokio debugging
-    // console_subscriber::init();
+    log_internal::init_logger();
 
     let rs_base_dir = retroshare_compat::get_base_dir();
 
@@ -255,30 +221,31 @@ async fn main() {
     let peer_id = Arc::new(SslId(peer_id));
 
     // init data core
-    let data_core = model::DataCore::new(ssl_key, friends, peer_id, gxs_id_db).await;
-    let own_ips = data_core.get_own_location().get_ips().0.clone(); // TODO
+    // let data_core = model::DataCore::new(ssl_key, friends, peer_id).await;
+
+    // enter main loop
+    let (mut core, data_core) = CoreController::new(ssl_key, friends, peer_id, gxs_id_db).await;
+    let fut = core.run();
+
+    // let own_ips = data_core.get_own_location().get_ips().0.clone(); // TODO
 
     // setup listener
-    let port = own_ips
-        .iter()
-        .find(|ip| {
-            if let SocketAddr::V4(v4) = ip.addr.0 {
-                return v4.ip().is_private();
-            }
-            false
-        })
-        .expect("can't find local address!")
-        .addr
-        .0
-        .port();
-    let _addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
+    // let port = own_ips
+    //     .iter()
+    //     .find(|ip| {
+    //         if let SocketAddr::V4(v4) = ip.addr.0 {
+    //             return v4.ip().is_private();
+    //         }
+    //         false
+    //     })
+    //     .expect("can't find local address!")
+    //     .addr
+    //     .0
+    //     .port();
+    // let _addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
 
     // setup webui
     let web = webui::actix::run_actix(data_core.clone());
-
-    // enter main loop
-    let mut core = CoreController::new(data_core).await;
-    let fut = core.run();
 
     // run everything
     select! {

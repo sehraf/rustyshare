@@ -1,22 +1,26 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use log::{debug, info};
+use log::{debug, info, trace, warn};
 use retroshare_compat::{
     serde::{from_retroshare_wire, to_retroshare_wire},
-    services::bwctrl::BwCtrlAllowedItem,
+    services::{bwctrl::BwCtrlAllowedItem, service_info::RsServiceInfo},
 };
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use tokio::{
+    select,
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
+    time::{interval, Interval},
+};
 
 use crate::{
-    handle_packet,
     low_level_parsing::{headers::ServiceHeader, Packet},
     model::{
         intercom::{Intercom, PeerState, PeerUpdate},
         DataCore,
     },
-    services::{HandlePacketResult, Service},
-    utils::{self, simple_stats::StatsCollection, Timers},
+    services::Service,
+    utils::units,
 };
 
 use ::retroshare_compat::services::ServiceType;
@@ -24,34 +28,51 @@ use ::retroshare_compat::services::ServiceType;
 const BWCTRL_SUB_TYPE: u8 = 0x01; // RS_PKT_SUBTYPE_BWCTRL_ALLOWED_ITEM ?!
 
 pub struct BwCtrl {
+    rx: UnboundedReceiver<Intercom>,
+
+    core: Arc<DataCore>,
+    core_tx: UnboundedSender<Intercom>,
     events: UnboundedReceiver<Intercom>,
+
+    timer: Interval,
 }
 
 impl BwCtrl {
-    pub async fn new(dc: &Arc<DataCore>) -> BwCtrl {
-        let (tx, rx) = unbounded_channel();
-        dc.events_subscribe(tx).await;
-        BwCtrl { events: rx }
+    pub async fn new(
+        core: &Arc<DataCore>,
+        core_tx: UnboundedSender<Intercom>,
+        rx: UnboundedReceiver<Intercom>,
+    ) -> BwCtrl {
+        let (tx_events, rx_events) = unbounded_channel();
+        core.events_subscribe(tx_events).await;
+
+        BwCtrl {
+            rx,
+
+            core: core.to_owned(),
+            core_tx,
+            events: rx_events,
+
+            timer: interval(Duration::from_secs(5)),
+        }
     }
 
-    pub fn handle_incoming(
-        &self,
-        header: &ServiceHeader,
-        mut packet: Packet,
-    ) -> HandlePacketResult {
+    fn handle_incoming(&self, header: &ServiceHeader, mut packet: Packet) {
         assert_eq!(header.sub_type, BWCTRL_SUB_TYPE);
 
         let item: BwCtrlAllowedItem = from_retroshare_wire(&mut packet.payload);
 
         debug!(
-            "[BwCtrl] received bandwidth limit of {}/s from {}",
-            utils::units::pretty_print_bytes(item.0 as u64),
+            "received bandwidth limit of {}/s from {}",
+            units::pretty_print_bytes(item.0 as u64),
             &packet.peer_id
         );
 
         // TODO actually care about bw limits
 
-        handle_packet!()
+        // self.core_tx
+        //     .send(Intercom::Send(packet))
+        //     .expect("failed to send to core");
     }
 }
 
@@ -61,46 +82,62 @@ impl Service for BwCtrl {
         ServiceType::BwCtrl
     }
 
-    async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
-        debug!("handle_packet");
-
-        self.handle_incoming(&packet.header.into(), packet)
+    fn get_service_info(&self) -> RsServiceInfo {
+        RsServiceInfo::new(self.get_id().into(), "bandwidth_ctrl")
     }
 
-    async fn tick(
-        &mut self,
-        _stats: &mut StatsCollection,
-        _timers: &mut Timers,
-    ) -> Option<Vec<Packet>> {
-        let mut out: Vec<Packet> = vec![];
+    fn run(mut self) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                select! {
+                    msg = self.rx.recv() => {
+                        if let Some(msg) = msg {
+                            trace!("handling msg {msg:?}");
 
-        while let Ok(cmd) = self.events.try_recv() {
-            match cmd {
-                Intercom::PeerUpdate(PeerUpdate::Status(PeerState::Connected(loc, _addr))) => {
-                    let item = BwCtrlAllowedItem { 0: 1_000_000 }; // bytes/sec
-                    let payload = to_retroshare_wire(&item);
+                            match msg {
+                                Intercom::Receive(packet) =>
+                                    self.handle_incoming(&packet.header.to_owned().into(), packet),
+                                _ => warn!("unexpected message: {msg:?}"),
+                            }
+                        }
+                    }
+                    event = self.events.recv() => {
+                        trace!("handling event: {event:?}");
+                        if let Some(event) = event {
+                            match event {
+                                Intercom::PeerUpdate(PeerUpdate::Status(PeerState::Connected(loc, _addr))) => {
+                                    let item = BwCtrlAllowedItem { 0: 1_000_000 }; // bytes/sec
+                                    let payload = to_retroshare_wire(&item);
 
-                    let packet = Packet::new(
-                        ServiceHeader::new(self.get_id(), BWCTRL_SUB_TYPE, &payload).into(),
-                        payload,
-                        loc.clone(),
-                    );
+                                    let packet = Packet::new(
+                                        ServiceHeader::new(self.get_id(), BWCTRL_SUB_TYPE, &payload).into(),
+                                        payload,
+                                        loc.clone(),
+                                    );
+                                    self.core_tx.send(Intercom::Send(packet)).expect("failed to send to core");
 
-                    out.push(packet);
-                    info!("[BwCtrl] sending bw limit info to {loc}");
+                                    info!("sending bw limit info to {loc}");
+                                }
+                                // we don't care for the rest!
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ = self.timer.tick() => {
+                        for (peer_id, _) in self.core.get_connected_peers().lock().await.0.iter() {
+                            let item = BwCtrlAllowedItem { 0: 1_000_000 }; // bytes/sec
+                            let payload = to_retroshare_wire(&item);
+
+                            let packet = Packet::new(
+                                ServiceHeader::new(self.get_id(), BWCTRL_SUB_TYPE, &payload).into(),
+                                payload,
+                                peer_id.clone(),
+                            );
+                            self.core_tx.send(Intercom::Send(packet)).expect("failed to send to core");
+                        }
+                    }
                 }
-                // we don't care for the rest!
-                _ => {}
             }
-        }
-
-        if out.is_empty() {
-            return None;
-        }
-        Some(out)
-    }
-
-    fn get_service_info(&self) -> (String, u16, u16, u16, u16) {
-        (String::from("bandwidth_ctrl"), 1, 0, 1, 0)
+        })
     }
 }

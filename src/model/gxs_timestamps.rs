@@ -19,6 +19,7 @@ use tokio::sync::RwLock;
 pub struct GxsSyncTimeStamps {
     // BUG? RetroShares documentation is (maybe) outdated.
     // For example: mServerMsgUpdateMap has an _additional_ std::map<RsPeerId, RsPeerUpdateTsRecord>
+
     /// mClientGrpUpdateMap: map< RsPeerId, TimeStamp >
     ///
     /// Time stamp of last modification of group data for that peer (in peer's clock time!)
@@ -37,7 +38,7 @@ pub struct GxsSyncTimeStamps {
     /// Set at server to be mServerMsgUpdateMap[grpId]->msgUpdateTS
     peers_message_update: RwLock<HashMap<Arc<PeerId>, HashMap<Arc<GxsGroupId>, u32>>>,
 
-    /// mGrpServerUpdateItem:  TimeStamp
+    /// mGrpServerUpdate:  TimeStamp
     ///
     /// Last group local modification timestamp over all groups
     local_last_update: RwLock<u32>,

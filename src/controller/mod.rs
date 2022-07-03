@@ -7,24 +7,26 @@ use std::{
 use tokio::{
     select,
     sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
     time::interval,
 };
 
-use retroshare_compat::services::service_info::RsServiceInfo;
+use retroshare_compat::{basics::SslId, gxs::sqlite::database::GxsDatabase};
 
 use crate::{
+    gxs::gxs_backend::GxsShared,
     model::{
         intercom::{Intercom, PeerState, PeerThreadCommand, PeerUpdate},
         location::Location,
+        person::Peer,
         ConnectedPeerEntries, DataCore,
     },
     retroshare_compat::ssl_key::SslKey,
-    services::{HandlePacketResult, Services},
-    transport_ng::ConnectionType,
+    services::Services,
     utils::{self, simple_stats::StatsCollection},
 };
 
-use self::connected_peer::ConnectedPeer;
+use self::connected_peer::ConnectionBuilder;
 
 pub mod connected_peer;
 
@@ -32,53 +34,59 @@ pub struct CoreController {
     data_core: Arc<DataCore>,
     services: Services,
 
-    tx_core: UnboundedSender<Intercom>,
-    rx_core: UnboundedReceiver<Intercom>,
+    core_tx: UnboundedSender<Intercom>,
+    core_rx: UnboundedReceiver<Intercom>,
 
-    pending_connection_attempts: ConnectedPeerEntries,
+    pending_connection_attempts: ConnectedPeerEntries<Option<JoinHandle<()>>>,
 }
 
 impl CoreController {
-    pub async fn new(data_core: Arc<DataCore>) -> Self {
-        let (tx_core, rx_core) = unbounded_channel();
-        let services = Services::get_core_services(&data_core, tx_core.clone()).await;
+    pub async fn new(
+        keys: SslKey,
+        friends: (Vec<Arc<Peer>>, Vec<Arc<Location>>),
+        own_id: Arc<SslId>,
+        gxs_id_db: GxsDatabase,
+    ) -> (Self, Arc<DataCore>) {
+        let (core_tx, core_rx) = unbounded_channel();
+
+        let gxs_shared_id = Arc::new(GxsShared::new(core_tx.clone(), own_id.clone()));
+
+        let data_core = DataCore::new(keys, friends, own_id, gxs_shared_id.to_owned()).await;
+
+        let services =
+            Services::get_core_services(&data_core, core_tx.clone(), (gxs_id_db, gxs_shared_id))
+                .await;
 
         if log::log_enabled!(log::Level::Info) {
             info!("Core starting ...");
             info!("registered core services:");
             for s in services.get_services() {
-                info!(" - {:04X?}: {}", s.get_id() as u16, s.get_service_info().0);
+                info!(" - {:04X?}: {:?}", s as u16, s);
             }
         }
 
-        CoreController {
-            data_core,
-            services,
+        let dc = data_core.clone();
+        (
+            CoreController {
+                data_core,
+                services,
 
-            rx_core,
-            tx_core,
+                core_rx,
+                core_tx,
 
-            pending_connection_attempts: ConnectedPeerEntries::default(),
-        }
+                pending_connection_attempts: ConnectedPeerEntries::default(),
+            },
+            dc,
+        )
     }
 
     pub async fn run(&mut self) -> ! {
-        let mut timer_services_250ms = interval(Duration::from_millis(250));
         let mut timer_slow_5s = interval(Duration::from_secs(5));
         let mut stats: StatsCollection = (Instant::now(), HashMap::new());
 
         loop {
-            let queue = self.rx_core.recv();
-            let tick = timer_services_250ms.tick();
-            let tick_slow = timer_slow_5s.tick();
-
             select! {
-                _ = tick => {
-                    trace!("tick");
-
-                    self.tick(&mut stats).await;
-                }
-                _ = tick_slow => {
+                _ = timer_slow_5s.tick() => {
                     trace!("tick_slow");
 
                     // Stats
@@ -96,7 +104,7 @@ impl CoreController {
                     //     EventType::PeerStateChanged { ssl_id: "d6fb6c0f53d18303dcc9043111490e40".into() }
                     // ).await;
                 }
-                msg = queue => {
+                msg = self.core_rx.recv() => {
                     trace!("queue");
 
                     match msg {
@@ -104,16 +112,7 @@ impl CoreController {
                         None => {}
                     }
                 }
-            }
-        }
-    }
 
-    async fn tick(&mut self, stats: &mut StatsCollection) {
-        // handle services
-        if let Some(items) = self.services.tick_all(stats).await {
-            // this can be optimazed probably
-            for item in items {
-                self.data_core.try_send_to_peer(item).await;
             }
         }
     }
@@ -140,23 +139,23 @@ impl CoreController {
                         match state {
                             // updates
                             PeerState::Connected(loc, _addr) => {
-                                if let Some((peer_tx, handler)) =
+                                if let Some((peer_tx, handle)) =
                                     self.pending_connection_attempts.0.remove(loc)
                                 {
-                                    info!("[core] booted up location {loc}");
-                                    // self.data_core
-                                    //     .connected_peer_add(loc.clone(), peer_tx, handler)
-                                    //     .await;
+                                    info!("booted up location {loc}");
+
+                                    let handle = handle.await.unwrap().expect(
+                                        "peer is connected but thread handle doesn't exists?!",
+                                    );
+
                                     self.data_core
                                         .get_connected_peers()
                                         .lock()
                                         .await
                                         .0
-                                        .insert(loc.to_owned(), (peer_tx, handler));
+                                        .insert(loc.to_owned(), (peer_tx, handle));
                                 } else {
-                                    log::error!(
-                                        "[core] unable to find booted up {loc} in pending list!"
-                                    );
+                                    log::error!("unable to find booted up {loc} in pending list!");
                                 }
                             }
                             PeerState::NotConnected(loc) => {
@@ -237,25 +236,26 @@ impl CoreController {
                 assert!(packet.has_location(), "no location set!");
                 trace!("handling packet {packet:?}");
 
-                match self.services.handle_packet(packet.to_owned(), true).await {
-                    // packet was locally handled and an answer was generated
-                    HandlePacketResult::Handled(Some(answer)) => {
-                        self.data_core.try_send_to_peer(answer).await
-                    }
-                    // packet was locally handled and no answer was generated
-                    HandlePacketResult::Handled(None) => {}
-                    // packet was not locally handled as no fitting service was found
-                    HandlePacketResult::NotHandled(packet) => {
-                        warn!(
-                            "[core] core received a packet that cannot be handled! {:?}",
-                            packet.header
-                        );
-                    }
-                    // something else went wrong
-                    HandlePacketResult::Error(why) => {
-                        warn!("[core] failed to handle packet: {why:?}")
-                    }
-                }
+                self.services.handle_packet(packet.to_owned()).await;
+                // match self.services.handle_packet(packet.to_owned()).await {
+                //     // packet was locally handled and an answer was generated
+                //     HandlePacketResult::Handled(Some(answer)) => {
+                //         self.data_core.try_send_to_peer(answer).await
+                //     }
+                //     // packet was locally handled and no answer was generated
+                //     HandlePacketResult::Handled(None) => {}
+                //     // packet was not locally handled as no fitting service was found
+                //     HandlePacketResult::NotHandled(packet) => {
+                //         warn!(
+                //             "[core] core received a packet that cannot be handled! {:?}",
+                //             packet.header
+                //         );
+                //     }
+                //     // something else went wrong
+                //     HandlePacketResult::Error(why) => {
+                //         warn!("[core] failed to handle packet: {why:?}")
+                //     }
+                // }
             }
 
             Intercom::Event(_) => (),
@@ -265,12 +265,12 @@ impl CoreController {
             }
         }
 
-        // TODO clean up
         // forward message
         match msg {
             Intercom::PeerUpdate(state) => {
                 // handle event listener
                 for subscriber in self.data_core.get_subscribers().await.iter() {
+                    debug!("{subscriber:?}, closed: {}", subscriber.is_closed());
                     subscriber
                         .send(Intercom::PeerUpdate(state.clone()))
                         .expect("failed to communicate with service");
@@ -319,107 +319,11 @@ impl CoreController {
             //     continue;
             // }
             trace!("trying to connect to {}", candidate.get_name());
-            let (builder, handler_tx) = ConnectionBuilder::new(&self, candidate.clone());
+            let (builder, peer_tx) = ConnectionBuilder::new(&self, candidate.clone());
             let handler = tokio::spawn(builder.connect());
             self.pending_connection_attempts
                 .0
-                .insert(candidate.get_location_id(), (handler_tx, handler));
+                .insert(candidate.get_location_id(), (peer_tx, handler));
         }
-    }
-}
-
-struct ConnectionBuilder {
-    peer_location: Arc<Location>,
-    // own_peer_id: Arc<PeerId>,
-    own_key_pair: SslKey,
-    outer_tx: UnboundedSender<Intercom>,
-    inner_rx: UnboundedReceiver<Intercom>,
-    global_services: Vec<RsServiceInfo>,
-}
-
-impl ConnectionBuilder {
-    pub fn new(
-        cc: &CoreController,
-        peer_location: Arc<Location>,
-    ) -> (Self, UnboundedSender<Intercom>) {
-        let own_peer_id = cc.data_core.get_own_location().get_location_id();
-        let own_key_pair = cc.data_core.get_own_keypair().to_owned();
-        let outer_tx = cc.tx_core.clone();
-        let (handler_tx, inner_rx) = unbounded_channel();
-        let global_services = cc.services.get_service_infos();
-
-        assert_ne!(peer_location.get_location_id(), own_peer_id);
-
-        (
-            ConnectionBuilder {
-                peer_location,
-                // own_peer_id,
-                own_key_pair,
-                outer_tx,
-                inner_rx,
-                global_services,
-            },
-            handler_tx,
-        )
-    }
-
-    async fn connect(self) {
-        trace!("trying to connect to {}", self.peer_location.get_name());
-        // turn IPs into ConnectionType::Tcp
-        let ips = {
-            let ips = self.peer_location.get_ips();
-            let mut local: Vec<ConnectionType> = ips
-                .0
-                .iter()
-                .map(|val| ConnectionType::Tcp(val.addr.0))
-                .collect();
-            let mut external: Vec<ConnectionType> = ips
-                .1
-                .iter()
-                .map(|val| ConnectionType::Tcp(val.addr.0))
-                .collect();
-            local.append(&mut external);
-            local
-        };
-
-        let _loc_id = self.peer_location.get_location_id().to_owned();
-        let loc_key = self.peer_location.get_person().get_pgp().to_owned();
-
-        // try to connect
-        if let Ok(con) = crate::transport_ng::Connection::new(
-            &self.own_key_pair,
-            loc_key,
-            self.peer_location.get_name(),
-        ) {
-            for ip in ips {
-                trace!(
-                    "trying to connect to {} with ip {:?}",
-                    self.peer_location.get_name(),
-                    ip
-                );
-
-                if let Ok(tls_stream) = con.connect(ip).await {
-                    trace!("connected to {}!", self.peer_location.get_name(),);
-                    ConnectedPeer::run(
-                        self.inner_rx,
-                        self.outer_tx.to_owned(),
-                        tls_stream,
-                        self.peer_location.clone(),
-                        self.global_services,
-                    )
-                    .await;
-                    break;
-                }
-            }
-        } else {
-            warn!("failed to connect to {}", self.peer_location.get_name());
-        }
-
-        // failed to connect or disconnected
-        self.outer_tx
-            .send(Intercom::PeerUpdate(PeerUpdate::Status(
-                PeerState::NotConnected(self.peer_location.get_location_id()),
-            )))
-            .expect("failed to send");
     }
 }

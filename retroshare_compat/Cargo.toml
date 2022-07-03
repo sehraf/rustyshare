@@ -8,7 +8,7 @@ edition = "2021"
 default = []
 
 [dependencies]
-sequoia-openpgp = "1.8"
+sequoia-openpgp = "1.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_repr = "0.1"

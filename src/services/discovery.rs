@@ -4,39 +4,45 @@ use std::{
 };
 
 use async_trait::async_trait;
-use log::{debug, info, warn};
+use log::{debug, info, trace, warn};
 use retroshare_compat::{
     basics::SslId,
     serde::{from_retroshare_wire, to_retroshare_wire},
-    services::discovery::*,
+    services::{discovery::*, service_info::RsServiceInfo},
     tlv::{
         tlv_ip_addr::{TlvIpAddrSet, TlvIpAddress},
         tlv_set::TlvPgpIdSet,
     },
 };
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::{
+    select,
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
+};
 
 use crate::{
-    handle_packet,
     low_level_parsing::{headers::ServiceHeader, Packet},
     model::{
         intercom::{Intercom, PeerState, PeerUpdate},
         person::Peer,
         DataCore,
     },
-    services::{HandlePacketResult, Service},
-    utils::{simple_stats::StatsCollection, Timers},
+    send_to_core,
+    services::Service,
 };
 
 use ::retroshare_compat::services::ServiceType;
 
 const DISCOVERY_SUB_TYPE_PGP_LIST: u8 = 0x01;
 const DISCOVERY_SUB_TYPE_PGP_CERT: u8 = 0x02;
-const DISCOVERY_SUB_TYPE_CONTACT: u8 = 0x05; // deprecated
+#[deprecated]
+const DISCOVERY_SUB_TYPE_CONTACT: u8 = 0x05;
 const DISCOVERY_SUB_TYPE_IDENTITY_LIST: u8 = 0x06;
 const DISCOVERY_SUB_TYPE_PGP_CERT_BINARY: u8 = 0x09;
 
 pub struct Discovery {
+    rx: UnboundedReceiver<Intercom>,
+
     own_id: Arc<SslId>,
 
     core_tx: UnboundedSender<Intercom>,
@@ -47,23 +53,28 @@ pub struct Discovery {
 }
 
 impl Discovery {
-    pub async fn new(dc: &Arc<DataCore>, core_tx: UnboundedSender<Intercom>) -> Discovery {
-        let (tx, rx) = unbounded_channel();
-        dc.events_subscribe(tx).await;
+    pub async fn new(
+        core: &Arc<DataCore>,
+        core_tx: UnboundedSender<Intercom>,
+        rx: UnboundedReceiver<Intercom>,
+    ) -> Discovery {
+        let (tx_events, rx_events) = unbounded_channel();
+        core.events_subscribe(tx_events).await;
 
         let mut d = Discovery {
-            own_id: dc.get_own_location().get_location_id().clone(),
+            rx,
+
+            own_id: core.get_own_location().get_location_id().clone(),
 
             core_tx,
-            events_rx: rx,
+            events_rx: rx_events,
 
-            persons: dc.get_persons().clone(),
+            persons: core.get_persons().clone(),
             info: DiscContactItem::default(),
         };
 
-        d.info.pgp_id = dc.get_own_person().get_pgp_id().clone();
+        d.info.pgp_id = core.get_own_person().get_pgp_id().clone();
         d.info.ssl_id = *d.own_id.to_owned();
-        // d.info.version = String::from("RustyShare 0.0.dontask");
         d.info.version = format!(
             "{} {}",
             env!("CARGO_PKG_VERSION"),
@@ -76,7 +87,7 @@ impl Discovery {
         d.info.vs_dht = VsDht::Off as u16;
         d.info.vs_disc = VsDisc::Full as u16;
 
-        let me = dc.get_own_location();
+        let me = core.get_own_location();
         let ips = me.get_ips();
 
         d.info.local_addr_v4 = TlvIpAddress(SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0)), 1337));
@@ -108,12 +119,9 @@ impl Discovery {
         d
     }
 
-    pub async fn handle_incoming(
-        &self,
-        header: &ServiceHeader,
-        mut packet: Packet,
-    ) -> HandlePacketResult {
+    fn handle_incoming(&self, header: &ServiceHeader, mut packet: Packet) {
         match header.sub_type {
+            #[allow(deprecated)]
             DISCOVERY_SUB_TYPE_CONTACT => {
                 let item = read_rs_disc_contact_item(&mut packet.payload);
                 // println!("received DiscContactItem: {}", item);
@@ -121,12 +129,10 @@ impl Discovery {
                 // println!("ssl_id: {}", item.ssl_id);
 
                 if item.ssl_id == *self.own_id {
-                    // describung us self
-                    info!("[Discovery] DiscContactItem: received our info");
+                    // describing us self
+                    info!("DiscContactItem: received our info");
                 } else {
-                    return self
-                        .handle_peer_contact(&item, packet.peer_id.clone())
-                        .await;
+                    self.handle_peer_contact(&item, packet.peer_id.clone());
                 }
             }
             DISCOVERY_SUB_TYPE_IDENTITY_LIST => {
@@ -136,22 +142,17 @@ impl Discovery {
             DISCOVERY_SUB_TYPE_PGP_LIST
             | DISCOVERY_SUB_TYPE_PGP_CERT
             | DISCOVERY_SUB_TYPE_PGP_CERT_BINARY => {
-                info!("[Discovery] received {header:?}");
+                info!("received {header:?}");
             }
             sub_type => {
-                warn!("[Discovery] recevied unknown sub typ {sub_type}");
+                warn!("received unknown sub typ {sub_type}");
             }
         }
-        handle_packet!()
     }
 
-    async fn handle_peer_contact(
-        &self,
-        contact: &DiscContactItem,
-        from: Arc<SslId>,
-    ) -> HandlePacketResult {
+    fn handle_peer_contact(&self, contact: &DiscContactItem, from: Arc<SslId>) {
         if contact.ssl_id == *from {
-            // describing theirself
+            // describing themselves
             if contact.vs_disc != VsDisc::Off as u16 {
                 // send own DISCOVERY_SUB_TYPE_PGP_LIST
                 let mut item = DiscPgpListItem {
@@ -166,7 +167,8 @@ impl Discovery {
                 let payload = to_retroshare_wire(&item);
                 let header =
                     ServiceHeader::new(self.get_id(), DISCOVERY_SUB_TYPE_PGP_LIST, &payload).into();
-                return handle_packet!(Packet::new(header, payload, from));
+
+                send_to_core!(self, Packet::new(header, payload, from));
             }
         } else {
             // describing someone else
@@ -185,8 +187,6 @@ impl Discovery {
                 )))
                 .expect("failed to communicate with core");
         }
-
-        HandlePacketResult::Handled(None)
     }
 }
 
@@ -196,48 +196,49 @@ impl Service for Discovery {
         ServiceType::Discovery
     }
 
-    async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
-        debug!("handle_packet");
-
-        self.handle_incoming(&packet.header.into(), packet).await
+    fn get_service_info(&self) -> RsServiceInfo {
+        RsServiceInfo::new(self.get_id().into(), "disc")
     }
 
-    async fn tick(
-        &mut self,
-        _stats: &mut StatsCollection,
-        _timers: &mut Timers,
-    ) -> Option<Vec<Packet>> {
-        let mut out: Vec<Packet> = vec![];
+    fn run(mut self) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                select! {
+                    msg = self.rx.recv() => {
+                        if let Some(msg) = msg {
+                            trace!("handling msg {msg:?}");
 
-        while let Ok(cmd) = self.events_rx.try_recv() {
-            match cmd {
-                Intercom::PeerUpdate(PeerUpdate::Status(PeerState::Connected(loc, _addr))) => {
-                    // let mut payload = vec![];
+                            match msg {
+                                Intercom::Receive(packet) => self.handle_incoming(&packet.header.to_owned().into(), packet),
+                                _ => warn!("unexpected message: {msg:?}"),
+                            }
+                        }
+                    }
+                    event = self.events_rx.recv() => {
+                        if let Some(event) = event {
+                            match event {
+                                Intercom::PeerUpdate(PeerUpdate::Status(PeerState::Connected(loc, _addr))) => {
+                                    // write_rs_disc_contact_item(&mut payload, &self.info);
+                                    let payload = to_retroshare_wire(&self.info);
+                                    let packet = Packet::new(
+                                        // FIXME
+                                        #[allow(deprecated)]
+                                        ServiceHeader::new(self.get_id(), DISCOVERY_SUB_TYPE_CONTACT, &payload)
+                                            .into(),
+                                        payload,
+                                        loc.clone(),
+                                    );
 
-                    // write_rs_disc_contact_item(&mut payload, &self.info);
-                    let payload = to_retroshare_wire(&self.info);
-                    let packet = Packet::new(
-                        ServiceHeader::new(self.get_id(), DISCOVERY_SUB_TYPE_CONTACT, &payload)
-                            .into(),
-                        payload,
-                        loc.clone(),
-                    );
-
-                    out.push(packet);
-                    info!("[Discovery] sending contact info to {loc}");
+                                    info!("sending contact info to {loc}");
+                                    send_to_core!(self, packet);
+                                }
+                                // we don't care for the rest!
+                                _ => {}
+                            }
+                        }
+                    }
                 }
-                // we don't care for the rest!
-                _ => {}
             }
-        }
-
-        if out.is_empty() {
-            return None;
-        }
-        Some(out)
-    }
-
-    fn get_service_info(&self) -> (String, u16, u16, u16, u16) {
-        (String::from("disc"), 1, 0, 1, 0)
+        })
     }
 }

@@ -465,6 +465,9 @@ impl GxsDatabase {
 
     pub fn insert_group(&self, group: &GxsGroup) -> Result<()> {
         // TODO? can this be improved into one statement?
+
+        // crash early
+        let blobs = group.get_blobs();
         
         // store meta
         let fields = &GxsGrpMetaSql::get_columns();
@@ -495,14 +498,13 @@ impl GxsDatabase {
                 .collect::<Vec<_>>(),
             vec![KEY_GRP_ID, KEY_NXS_DATA, KEY_NXS_DATA_LEN, KEY_NXS_META]
         );
-        let blobs = group.get_blobs();
         let stm = String::from("UPDATE ")
             + TABLE_GROUPS
             + " SET "
             + KEY_NXS_DATA
             + "=(?2),"
             + KEY_NXS_DATA_LEN
-            + "=(?3)"
+            + "=(?3),"
             + KEY_NXS_META
             + "=(?4)"
             + " WHERE "

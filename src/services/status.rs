@@ -1,42 +1,48 @@
 use async_trait::async_trait;
-use log::{debug, info};
+use log::{info, trace, warn};
 use retroshare_compat::{
     serde::from_retroshare_wire,
-    services::{status::{StatusItem, StatusValue}, ServiceType},
+    services::{
+        status::{StatusItem, StatusValue},
+        ServiceType, service_info::RsServiceInfo,
+    },
 };
 use std::time::SystemTime;
+use tokio::{
+    select,
+    sync::mpsc::{UnboundedReceiver, UnboundedSender}, task::JoinHandle,
+};
 
 use crate::{
-    handle_packet,
     low_level_parsing::{headers::ServiceHeader, Packet},
-    services::{HandlePacketResult, Service},
-    utils::{simple_stats::StatsCollection, Timers},
+    model::intercom::Intercom,
+    send_to_peer,
+    services::Service,
 };
 
 use super::build_packet_without_location;
 
-#[allow(unused)]
 const STATUS_SUB_SERVICE: u8 = 0x01;
 
 /// Implements a status stub that sends "online" to the other peer and consume any incoming packets
 pub struct Status {
-    sent: bool,
+    peer_tx: UnboundedSender<Intercom>,
+    rx: UnboundedReceiver<Intercom>,
 }
 
 impl Status {
-    pub fn new() -> Status {
-        Status { sent: false }
+    pub fn new(
+        _core_tx: UnboundedSender<Intercom>,
+        peer_tx: UnboundedSender<Intercom>,
+        rx: UnboundedReceiver<Intercom>,
+    ) -> Status {
+        Status { peer_tx, rx }
     }
 
-    pub fn handle_incoming(
-        &self,
-        _header: &ServiceHeader,
-        mut packet: Packet,
-    ) -> HandlePacketResult {
+    fn handle_incoming(&self, header: &ServiceHeader, mut packet: Packet) {
+        assert_eq!(header.sub_type, STATUS_SUB_SERVICE);
         let item: StatusItem = from_retroshare_wire(&mut packet.payload);
-        info!("[status] received status {}", item.status);
-
-        handle_packet!()
+        info!("received status {}", item.status);
     }
 }
 
@@ -46,38 +52,39 @@ impl Service for Status {
         ServiceType::Status
     }
 
-    async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
-        debug!("handle_packet");
-
-        self.handle_incoming(&packet.header.into(), packet)
+    fn get_service_info(&self) -> RsServiceInfo {
+        RsServiceInfo::new(self.get_id().into(), "status")
     }
 
-    async fn tick(
-        &mut self,
-        _stats: &mut StatsCollection,
-        _timers: &mut Timers,
-    ) -> Option<Vec<Packet>> {
-        if !self.sent {
-            self.sent = true;
+    fn run(mut self) -> JoinHandle<()> {
+        let item = StatusItem {
+            send_time: SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_secs() as u32,
+            status: StatusValue::Online.into(),
+        };
 
-            let item = StatusItem {
-                send_time: SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs() as u32,
-                status: StatusValue::Online.into(),
-            };
+        // This is a test for a more streamlines "sending packets" system
+        // See services/mod.rs
+        let item = build_packet_without_location(&item);
 
-            // This is a test for a more streamlines "sending packets" system
-            // See services/mod.rs
-            let p = build_packet_without_location(&item);
+        send_to_peer!(self, item);
 
-            return Some(vec![p]);
-        }
-        None
-    }
-
-    fn get_service_info(&self) -> (String, u16, u16, u16, u16) {
-        (String::from("status"), 1, 0, 1, 0)
+        tokio::spawn(async move {
+            loop {
+                select! {
+                    msg = self.rx.recv() => {
+                        if let Some(msg) = msg {
+                            trace!("handling msg {msg:?}");
+                            match msg {
+                                Intercom::Receive(packet) => self.handle_incoming(&packet.header.to_owned().into(), packet),
+                                _ => warn!("unexpected message: {msg:?}"),
+                            }
+                        }
+                    }
+                }
+            }
+        })
     }
 }

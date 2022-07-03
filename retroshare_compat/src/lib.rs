@@ -1,3 +1,5 @@
+// #![feature(backtrace)]
+
 use byteorder::{ByteOrder, NetworkEndian};
 
 pub mod basics;
@@ -9,9 +11,9 @@ pub mod peers;
 pub mod serde;
 pub mod services;
 pub mod tlv;
+#[allow(dead_code, non_snake_case)]
+pub mod utils;
 pub mod webui;
-
-// pub mod foo;
 
 // write
 macro_rules! gen_writer {

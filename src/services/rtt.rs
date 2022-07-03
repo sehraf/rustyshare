@@ -1,48 +1,73 @@
 use async_trait::async_trait;
-use log::debug;
+use log::{debug, trace, warn};
 use retroshare_compat::{
-    serde::{from_retroshare_wire_result, to_retroshare_wire_result},
-    services::rtt::{RttPingItem, RttPongItem},
+    serde::{from_retroshare_wire_result, to_retroshare_wire},
+    services::{
+        rtt::{RttPingItem, RttPongItem},
+        service_info::RsServiceInfo,
+    },
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::{
+    select,
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
+    time::interval,
+};
 
 use crate::{
-    handle_packet,
     low_level_parsing::{headers::ServiceHeader, Packet},
-    services::{HandlePacketResult, Service},
-    utils::{simple_stats::StatsCollection, Timer, Timers},
+    model::intercom::Intercom,
+    send_to_peer,
+    services::Service,
 };
 
 use ::retroshare_compat::services::ServiceType;
 
-const RTT_TIMER: (&str, Duration) = ("rtt", Duration::from_secs(5));
+#[allow(dead_code)]const RTT_TIMER: (&str, Duration) = ("rtt", Duration::from_secs(5));
 
 const RTT_SUB_TYPE_PING: u8 = 0x01;
 const RTT_SUB_TYPE_PONG: u8 = 0x02;
 
 pub struct Rtt {
+    peer_tx: UnboundedSender<Intercom>,
+    // core_tx: UnboundedSender<Intercom>,
+    rx: UnboundedReceiver<Intercom>,
+
     next_seq_num: u32,
 }
 
 impl Rtt {
-    pub fn new(timers: &mut Timers) -> Rtt {
-        timers.insert(RTT_TIMER.0.into(), Timer::new(RTT_TIMER.1));
-
-        Rtt { next_seq_num: 1 }
+    pub fn new(
+        _core_tx: UnboundedSender<Intercom>,
+        peer_tx: UnboundedSender<Intercom>,
+        rx: UnboundedReceiver<Intercom>,
+    ) -> Rtt {
+        Rtt {
+            // core_tx,
+            peer_tx,
+            rx,
+            next_seq_num: 1,
+        }
     }
 
-    pub fn handle_incoming(
-        &self,
-        header: &ServiceHeader,
-        mut packet: Packet,
-    ) -> HandlePacketResult {
+    async fn tick(&mut self) {
+        let item = Rtt::gen_ping(self.next_seq_num.clone());
+        send_to_peer!(self, item);
+
+        self.next_seq_num = self.next_seq_num.wrapping_add(1);
+    }
+
+    fn handle_incoming(&self, header: &ServiceHeader, mut packet: Packet) {
         match header.sub_type {
             RTT_SUB_TYPE_PING => {
                 let ping: RttPingItem = from_retroshare_wire_result(&mut packet.payload)
                     .expect("failed to deserialize");
 
                 let item = Rtt::gen_pong(ping);
-                return handle_packet!(item);
+                self.peer_tx
+                    .send(Intercom::Send(item))
+                    .expect("failed to send to peer");
             }
             RTT_SUB_TYPE_PONG => {
                 let pong: RttPongItem = from_retroshare_wire_result(&mut packet.payload)
@@ -61,9 +86,8 @@ impl Rtt {
 
                 debug!("received rtt: {rtt}ms with a {offset}ms offset");
             }
-            sub_type => log::error!("[RTT] recevied unknown sub typ {sub_type}"),
+            sub_type => log::error!("received unknown sub typ {sub_type}"),
         }
-        handle_packet!()
     }
 
     fn gen_ping(seq_no: u32) -> Packet {
@@ -76,7 +100,7 @@ impl Rtt {
             ),
         };
 
-        let payload = to_retroshare_wire_result(&ping).expect("failed to serialize");
+        let payload = to_retroshare_wire(&ping);
         let header = ServiceHeader::new(ServiceType::Rtt, RTT_SUB_TYPE_PING, &payload);
 
         Packet::new_without_location(header.into(), payload)
@@ -92,7 +116,7 @@ impl Rtt {
             ),
         };
 
-        let payload = to_retroshare_wire_result(&pong).expect("failed to serialize");
+        let payload = to_retroshare_wire(&pong);
         let header = ServiceHeader::new(ServiceType::Rtt, RTT_SUB_TYPE_PONG, &payload);
 
         Packet::new_without_location(header.into(), payload)
@@ -119,34 +143,30 @@ impl Service for Rtt {
         ServiceType::Rtt
     }
 
-    async fn handle_packet(&self, packet: Packet) -> HandlePacketResult {
-        debug!("handle_packet");
-
-        self.handle_incoming(&packet.header.into(), packet)
+    fn get_service_info(&self) -> RsServiceInfo {
+        RsServiceInfo::new(self.get_id().into(), "rtt")
     }
 
-    async fn tick(
-        &mut self,
-        _stats: &mut StatsCollection,
-        timers: &mut Timers,
-    ) -> Option<Vec<Packet>> {
-        let mut items: Vec<Packet> = vec![];
-        // if self.last_ping.elapsed().unwrap_or_default().as_secs() >= 5 {
-        if timers.get_mut(RTT_TIMER.0.into()).unwrap().expired() {
-            let item = Rtt::gen_ping(self.next_seq_num.clone());
-            items.push(item);
+    fn run(mut self) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut tick_timer = interval(Duration::from_secs(5));
 
-            self.next_seq_num = self.next_seq_num.wrapping_add(1);
-            // self.last_ping = SystemTime::now();
-        }
-        if items.len() > 0 {
-            return Some(items);
-        } else {
-            return None;
-        }
-    }
-
-    fn get_service_info(&self) -> (String, u16, u16, u16, u16) {
-        (String::from("rtt"), 1, 0, 1, 0)
+            loop {
+                select! {
+                    msg = self.rx.recv() => {
+                        if let Some(msg) = msg {
+                            trace!("handling msg {msg:?}");
+                            match msg {
+                                Intercom::Receive(packet) => self.handle_incoming(&packet.header.to_owned().into(), packet),
+                                _ => warn!("unexpected message: {msg:?}"),
+                            }
+                        }
+                    }
+                    _ = tick_timer.tick() => {
+                        self.tick().await;
+                    }
+                }
+            }
+        })
     }
 }

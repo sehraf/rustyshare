@@ -212,7 +212,7 @@ pub struct ChatMessage {
 impl From<ChatLobbyMsgItem> for ChatMessage {
     fn from(item: ChatLobbyMsgItem) -> Self {
         Self {
-            chat_id: item.bounce_obj.publobby_id.into(),
+            chat_id: item.bounce_obj.public_lobby_id.into(),
             // broadcast_peer_id: item.,
             lobby_peer_gxs_id: item.bounce_obj.signature.key_id.to_string().into(),
             // peer_alternate_nickname: item.,

@@ -1,10 +1,28 @@
-# rustyshare - It compiles!
+# rustyshare - RetroShare compatible Rust implementation
 
 [verse]
 --
 So i wanted to learn Rust and though it might be a _good_ idea to implement RetroShare in Rust as an exercise.
 Some parts might still look "c like" and some design pattern might be stupid or "anti Rust".
 --
+
+## Update 4 - _Back on Track (we derailed)_:
+  * I've refactored a lot and then _everything broke_!
+  ** I've continued asyncifying everything
+  *** Previously there were only a few _threads_
+  **** one for each peer, handling communication and (peer) services (that are the services that only core for their single peer, like heartbeat, status or rtt)
+  **** one for everything else aka. the core, handling all other services (that work with all peers, like chat or gxs stuff)
+  *** now there are 0 (`zero`) threads! (well this is kinda a lie but let me explain)
+  **** everything is a _task_, each service is an individual task, each peer and the core
+  **** core and peer tasks only move messages around
+  **** what are tasks in contrast to threads, you ask? well just have a look https://docs.rs/tokio/latest/tokio/task/index.html#what-are-tasks[here]!
+  *** every is async with queues (except where it is not :rolling_eyes:)
+  * I've properly restructured (=it's better than before!) the gxs/nxs code into a gxs backend. 
+  ** still some gxs id specifics are not separated properly but it's cleaner then before
+  ** one cool feature: I can request a gxs id (from the database, not peers) with a timeout in one line completely asynchronous, no polling involved!
+  * I've introduces proper flag support (Rust's `bitflags`).
+  ** This ensures type safety and enables nice debug printing
+  * gxs/nxs might still be not working a 100%, need to invest some more time
 
 ## Update 3 - _Chat & GxsIDs_:
   * the `chat` service is stabilized, bugs are fixed and everything is supposed to work ... (_famous last words_)

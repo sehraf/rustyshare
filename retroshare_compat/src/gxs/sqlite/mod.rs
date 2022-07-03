@@ -90,6 +90,9 @@ macro_rules! impl_sql_for_bitflags {
                 let value = value.as_i64()? as u32;
                 Ok($name::from_bits(value).unwrap_or_else(|| {
                     log::warn!("Invalid bits {:#X} for {}", value, stringify!($name));
+                    
+                    // log::warn!("{}", std::backtrace::Backtrace::capture());
+                    
                     $name::empty()
                 }))
             }

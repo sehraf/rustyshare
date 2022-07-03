@@ -293,21 +293,21 @@ macro_rules! gen_type_hex {
 
         impl From<&str> for $name {
             fn from(s: &str) -> Self {
-                let x: $wrapped = hex::decode(s).expect("faild to decode").into();
+                let x: $wrapped = hex::decode(s).expect("failed to decode").into();
                 Self(x)
             }
         }
 
         impl From<&String> for $name {
             fn from(s: &String) -> Self {
-                let x: $wrapped = hex::decode(s).expect("faild to decode").into();
+                let x: $wrapped = hex::decode(s).expect("failed to decode").into();
                 Self(x)
             }
         }
 
         impl From<String> for $name {
             fn from(s: String) -> Self {
-                let x: $wrapped = hex::decode(s).expect("faild to decode").into();
+                let x: $wrapped = hex::decode(s).expect("failed to decode").into();
                 Self(x)
             }
         }

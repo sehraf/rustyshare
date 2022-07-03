@@ -11,7 +11,7 @@ use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::{
-    basics::{GxsGroupId, GxsId},
+    basics::{GxsGroupId, GxsId, GxsIdHex},
     read_u16, read_u32,
     serde::{from_retroshare_wire_result, to_retroshare_wire_result},
     tlv::tags::*,
@@ -31,7 +31,9 @@ use super::{tlv_map::TlvMap, tlv_string::StringTagged, Tlv, Tlv2, TlvBinaryData,
 // Use a newtype to handle it easier.
 #[derive(Default, PartialEq, Eq, Serialize, Clone, Deserialize, Hash)]
 // pub struct KeyId(StringTagged<TLV_TYPE_STR_KEYID>);
-pub struct KeyId(Tlv2<TLV_TYPE_STR_KEYID, GxsId>);
+
+// The KeyId is encoded as hex, not in bytes!
+pub struct KeyId(Tlv2<TLV_TYPE_STR_KEYID, GxsIdHex>);
 
 impl Deref for KeyId {
     type Target = GxsId;
@@ -42,37 +44,38 @@ impl Deref for KeyId {
 
 impl Debug for KeyId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", hex::encode(&self.0 .0))
+        // write!(f, "{}", hex::encode(&self.0 .0))
+        write!(f, "{:?}", self.0 .0)
     }
 }
 
 impl From<KeyId> for GxsId {
     fn from(id: KeyId) -> Self {
-        *id.0.to_owned()
+        id.0 .0.to_owned().into()
     }
 }
 
 impl From<GxsId> for KeyId {
     fn from(id: GxsId) -> Self {
-        Self(id.into())
+        Self(GxsIdHex::from(id).into())
     }
 }
 
 impl From<KeyId> for GxsGroupId {
     fn from(id: KeyId) -> Self {
-        (*id.0.to_owned()).into()
+        id.0 .0.to_owned().into()
     }
 }
 
 impl From<GxsGroupId> for KeyId {
     fn from(id: GxsGroupId) -> Self {
-        Self(GxsId::from(id.0).into())
+        Self(GxsIdHex::from(id.to_string()).into())
     }
 }
 
 impl From<[u8; 16]> for KeyId {
     fn from(x: [u8; 16]) -> Self {
-        Self(GxsId::from(x).into())
+        Self(GxsIdHex::from(GxsId::from(x)).into())
     }
 }
 
@@ -357,5 +360,27 @@ impl ToSql for TlvSecurityKeySet {
         Ok(to_retroshare_wire_result(self)
             .map_err(|err| rusqlite::Error::ToSqlConversionFailure(err.into()))?
             .into())
+    }
+}
+
+#[cfg(test)]
+mod test_tlv_keys {
+    use crate::serde::{from_retroshare_wire, to_retroshare_wire};
+
+    use super::KeyId;
+
+    #[test]
+    fn test_tlv_keys() {
+        let orig = hex::decode(
+            "00a4000000263235626636643534343439303732316336663865313638303433383430353138",
+        )
+        .unwrap();
+
+        let de: KeyId = from_retroshare_wire(&mut orig.to_owned());
+        let expected = hex::decode("25bf6d544490721c6f8e168043840518").unwrap();
+        assert_eq!(de.0 .0, expected.as_slice());
+
+        let ser = to_retroshare_wire(&de);
+        assert_eq!(ser, orig);
     }
 }

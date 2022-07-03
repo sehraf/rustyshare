@@ -34,3 +34,32 @@ pub struct GxsIdGroupItem {
     #[serde(default)]
     mImage: Tlv<TLV_TYPE_IMAGE, Image>,
 }
+
+pub mod RsRegularExpression {
+    use serde::{Deserialize, Serialize};
+    use serde_repr::{Deserialize_repr, Serialize_repr};
+
+    use crate::tlv::{tags::*, tlv_string::StringTagged};
+
+    #[repr(u8)]
+    #[derive(Debug, Serialize_repr, Deserialize_repr)]
+    enum Tokens {
+        ExprDate,
+        ExprPop,
+        ExprSize,
+        ExprHash,
+        ExprName,
+        ExprPath,
+        ExprExt,
+        ExprComp,
+        ExprSizeMb,
+    }
+
+    // LinearizedExpression used by turtle
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct LinearizedExpression {
+        tokens: Vec<Tokens>,
+        ints: Vec<u32>,
+        strings: Vec<StringTagged<TLV_TYPE_STR_VALUE>>,
+    }
+}

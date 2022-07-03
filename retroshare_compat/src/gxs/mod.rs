@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::{
-    basics::{GxsGroupId, GxsId},
+    basics::{GxsGroupId, GxsId, PeerId},
     tlv::{tags::*, tlv_string::StringTagged, TlvBinaryData},
 };
 
@@ -105,10 +105,14 @@ impl GxsDatabaseBackend {
 
 // 	uint32_t transactionNumber; // set to zero if this is not a transaction item
 // };
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct NxsItem {
     #[serde(rename(serialize = "transactionNumber", deserialize = "transactionNumber"))]
     pub transaction_id: u32,
+
+    /// Used to store the communication partner. RS uses the base class RsItem to do so.
+    #[serde(skip)]
+    pub peer_id: PeerId,
 }
 
 // /*!
@@ -233,7 +237,7 @@ pub struct NxsGrp<const T: u16> {
     pub meta: TlvBinaryData<T>,
 
     // TODO
-    // Deserialised metaData, this is not serialised by the serialize() method. So it may contain private key parts in some cases.
+    // Deserialized metaData, this is not serialized by the serialize() method. So it may contain private key parts in some cases.
     #[serde(skip)]
     #[serde(rename(serialize = "metaData", deserialize = "metaData"))]
     pub meta_data: Option<GxsGrpMetaSql>,
@@ -273,13 +277,13 @@ pub enum NxsTransactionItemFlags {
 #[derive(Debug, Serialize_repr, Deserialize_repr, Clone)]
 pub enum NxsTransactionItemType {
     None = 0x0,
-    TypeGrpListResp = 0x01,
-    TypeMsgListResp = 0x02,
-    TypeGrpListReq = 0x04,
-    TypeMsgListReq = 0x08,
-    TypeGrps = 0x10,
-    TypeMsgs = 0x20,
-    TypeEncryptedData = 0x40,
+    GroupListResponse = 0x01,
+    MessageListResponse = 0x02,
+    GroupListRequest = 0x04,
+    MessageListRequest = 0x08,
+    Groups = 0x10,
+    Messages = 0x20,
+    EncryptedData = 0x40,
 }
 // /*!
 //  * This RsNxsItem is for use in enabling transactions
@@ -290,7 +294,6 @@ pub enum NxsTransactionItemType {
 //         uint16_t transactFlag;
 //         uint32_t nItems;
 //         uint32_t updateTS;
-
 //         // not serialised
 //         uint32_t timestamp;
 //     };
@@ -323,7 +326,7 @@ pub struct GxsReputation {
 }
 
 #[cfg(test)]
-mod test_nxs_transac {
+mod test_nxs_transaction {
     use crate::serde::to_retroshare_wire;
 
     use super::{NxsItem, NxsTransactionItem, NxsTransactionItemFlags, NxsTransactionItemType};
@@ -333,10 +336,11 @@ mod test_nxs_transac {
         let item = NxsTransactionItem {
             base: NxsItem {
                 transaction_id: 0x42,
+                ..Default::default()
             },
             items: 1,
             timestamp: 2,
-            transact_type: NxsTransactionItemType::TypeMsgListReq,
+            transact_type: NxsTransactionItemType::MessageListRequest,
             transact_flag: NxsTransactionItemFlags::FlagEndSuccess,
             // test: 0x08 << 8 | 0x04,
             update_ts: 0x10,

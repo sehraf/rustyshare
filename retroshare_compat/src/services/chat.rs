@@ -1,6 +1,6 @@
+use ::serde::{Deserialize, Serialize};
 use bitflags::bitflags;
 use bitflags_serde_shim::impl_serde_for_bitflags;
-use ::serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::{
@@ -13,7 +13,6 @@ use crate::{
 pub type ChatLobbyId = u64;
 pub type ChatLobbyMsgId = u64;
 pub type ChatLobbyNickName = StringTagged<TLV_TYPE_STR_NAME>;
-
 
 // pub type ChatLobbyFlags = u32; // FIXME
 
@@ -98,7 +97,7 @@ pub struct ChatMsgItem {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatLobbyBouncingObject {
-    pub publobby_id: ChatLobbyId,
+    pub public_lobby_id: ChatLobbyId,
     pub msg_id: ChatLobbyMsgId,
     pub nick: ChatLobbyNickName,
     pub signature: Toggleable<TlvKeySignature>,
@@ -376,6 +375,7 @@ impl Default for ChatIdType {
     }
 }
 
+// This is an older version that feels more like C++ instead of Rust
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ChatId {
     #[serde(default)]
@@ -419,3 +419,50 @@ impl From<DistantChatPeerId> for ChatId {
         }
     }
 }
+
+// This is a more Rust like version, which sadly doesn't work since the type is encoded as a number
+
+// #[derive(Debug, Serialize, Deserialize, Clone)]
+// #[serde(tag = "type")]
+// pub enum ChatId {
+//     TypePrivate {
+//         peer_id: PeerIdHex,
+//     }, // private chat with directly connected friend, peer_id is valid
+//     TypePrivateDistant {
+//         distant_chat_id: DistantChatPeerIdHex,
+//     }, // private chat with distant peer, gxs_id is valid
+//     TypeLobby {
+//         lobby_id: XInt64<u64>,
+//     }, // chat lobby id, lobby_id is valid
+//     TypeBroadcast, // message to/from all connected peers
+// }
+
+// impl From<ChatLobbyId> for ChatId {
+//     fn from(lobby_id: ChatLobbyId) -> Self {
+//         Self::TypeLobby {
+//             lobby_id: lobby_id.into(),
+//         }
+//     }
+// }
+
+// impl From<PeerId> for ChatId {
+//     fn from(peer_id: PeerId) -> Self {
+//         Self::TypePrivate {
+//             peer_id: peer_id.into(),
+//         }
+//     }
+// }
+
+// impl From<DistantChatPeerId> for ChatId {
+//     fn from(distant_chat_id: DistantChatPeerId) -> Self {
+//         Self::TypePrivateDistant {
+//             distant_chat_id: distant_chat_id.into(),
+//         }
+//     }
+// }
+
+// impl Default for ChatId {
+//     fn default() -> Self {
+//         ChatId::TypeBroadcast
+//     }
+// }
